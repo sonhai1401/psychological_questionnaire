@@ -61,99 +61,115 @@ if 'respondent_name' not in st.session_state:
 
 def upload_to_google_drive(respondent_name, answers):
     """Tải dữ liệu vào Google Sheet 'SurveyResults'"""
+
     try:
         import gspread
-        from oauth2client.service_account import ServiceAccountCredentials
-        
-        # Chuẩn bị dữ liệu một dòng
+        from google.oauth2.service_account import Credentials
+        import json
+    except Exception as e:
+        st.error(f"❌ Không thể import thư viện Google API: {e}")
+        return None
+
+    try:
+        # ============================
+        # 1️⃣ Chuẩn bị dữ liệu một dòng
+        # ============================
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         row_data = [timestamp, respondent_name]
-        
-        # Thêm tất cả câu trả lời vào một dòng
+
         for q_id in sorted(answers.keys()):
             answer = answers[q_id]
             q_config = SURVEY_CONFIG.get(q_id, {})
-            
-            # Format câu trả lời
+
             if isinstance(answer, list):
-                answer_text = []
+                # Multiple choice
+                answer_labels = []
                 for val in answer:
-                    for label, v in q_config.get('opts', []):
+                    for label, v in q_config.get("opts", []):
                         if v == val:
-                            answer_text.append(label)
+                            answer_labels.append(label)
                             break
-                answer_str = '; '.join(answer_text)
-            elif q_config.get('type') == 'radio' and 'opts' in q_config:
+                answer_str = "; ".join(answer_labels)
+
+            elif q_config.get("type") == "radio" and "opts" in q_config:
                 answer_str = ""
-                for label, v in q_config['opts']:
+                for label, v in q_config["opts"]:
                     if v == answer:
                         answer_str = label
                         break
+
             else:
-                answer_str = str(answer).replace('\n', ' ')
-            
+                answer_str = str(answer).replace("\n", " ")
+
             row_data.append(answer_str)
-        
-        # Lưu vào local CSV file
-        local_filename = f"survey_response_{respondent_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        csv_content = "Timestamp,Tên Người Trả Lời," + ",".join(sorted(answers.keys())) + "\n"
-        csv_content += ",".join([f'"{str(v).replace(chr(34), chr(34)+chr(34))}"' for v in row_data]) + "\n"
-        
-        with open(local_filename, 'w', encoding='utf-8') as f:
-            f.write(csv_content)
-        
-        # Thử upload lên Google Sheet nếu có credentials
-        try:
-            creds_dict = None
-            
-            # Cách 1: Lấy từ Streamlit Secrets (dành cho deployment)
-            if "google_credentials" in st.secrets:
-                creds_dict = st.secrets["google_credentials"]
-            # Cách 2: Lấy từ file cục bộ (dành cho development)
-            elif os.path.exists('credentials.json'):
-                import json as json_module
-                with open('credentials.json', 'r') as f:
-                    creds_dict = json_module.load(f)
-            
-            if creds_dict and GOOGLE_DRIVE_AVAILABLE:
-                # Sử dụng gspread để thêm dữ liệu vào Google Sheet
-                try:
-                    from gspread import service_account
-                    
-                    # Xác thực với Google Sheets
-                    gc = service_account.Credentials.from_service_account_info(
-                        creds_dict,
-                        scopes=['https://www.googleapis.com/auth/spreadsheets', 
-                                'https://www.googleapis.com/auth/drive']
-                    )
-                    
-                    client = gspread.authorize(gc)
-                    
-                    # Mở Google Sheet có tên 'SurveyResults'
-                    worksheet = client.open("SurveyResults").sheet1
-                    
-                    # Thêm dòng dữ liệu mới
-                    worksheet.append_row(row_data)
-                    
-                    st.success(f"✅ Dữ liệu đã được lưu vào Google Sheet 'SurveyResults' thành công!")
-                except gspread.exceptions.SpreadsheetNotFound:
-                    st.warning("⚠️ Không tìm thấy Google Sheet 'SurveyResults'. Hãy kiểm tra lại tên sheet.")
-                    st.info(f"✅ Dữ liệu đã được lưu vào file local: {local_filename}")
-                except Exception as e:
-                    st.warning(f"⚠️ Lỗi khi truy cập Google Sheet: {str(e)}")
-                    st.info(f"✅ Dữ liệu đã được lưu vào file local: {local_filename}")
-            else:
-                st.success(f"✅ Dữ liệu đã được lưu thành công!")
-                st.info(f"📁 File local: {local_filename}")
-                st.info("💡 Để gửi dữ liệu vào Google Sheet, hãy cấu hình credentials")
-        
-        except ImportError:
-            st.success(f"✅ Dữ liệu đã được lưu vào file local: {local_filename}")
-            st.info("💡 Để gửi dữ liệu vào Google Sheet, cài đặt: `pip install gspread oauth2client`")
-        
-        return local_filename
+
+        # ============================
+        # 2️⃣ Lưu LOCAL CSV
+        # ============================
+        local_filename = (
+            f"survey_response_{respondent_name}_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        )
+
+        csv_header = "Timestamp,Tên Người Trả Lời," + ",".join(sorted(answers.keys())) + "\n"
+        csv_row = ",".join([f'"{str(v).replace(chr(34), chr(34)*2)}"' for v in row_data]) + "\n"
+
+        with open(local_filename, "w", encoding="utf-8") as f:
+            f.write(csv_header + csv_row)
+
+        # ============================
+        # 3️⃣ NẾU CÓ Google Credentials
+        # ============================
+        creds_dict = None
+
+        # Deploy mode (Streamlit Cloud)
+        if "google_credentials" in st.secrets:
+            creds_dict = st.secrets["google_credentials"]
+
+        # Local development
+        elif os.path.exists("credentials.json"):
+            with open("credentials.json", "r", encoding="utf-8") as f:
+                creds_dict = json.load(f)
+
+        # ============================
+        # 4️⃣ Upload vào Google Sheets
+        # ============================
+        if creds_dict:
+            try:
+                scopes = [
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive",
+                ]
+
+                creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+                client = gspread.authorize(creds)
+
+                worksheet = client.open("SurveyResults").sheet1
+                worksheet.append_row(row_data)
+
+                st.success("✅ Đã lưu dữ liệu lên Google Sheet thành công!")
+                return local_filename
+
+            except gspread.exceptions.SpreadsheetNotFound:
+                st.warning("⚠️ Không tìm thấy Google Sheet 'SurveyResults'.")
+                st.info(f"📁 CSV đã được lưu: {local_filename}")
+                return local_filename
+
+            except Exception as e:
+                st.error(f"❌ Lỗi khi upload lên Google Sheet: {e}")
+                st.info(f"📁 CSV đã được lưu: {local_filename}")
+                return local_filename
+
+        # ============================
+        # 5️⃣ Nếu không có credentials
+        # ============================
+        else:
+            st.success("✅ Dữ liệu đã được lưu LOCAL.")
+            st.info("💡 Nếu muốn upload Google Sheet, hãy cấu hình secrets.")
+            return local_filename
+
     except Exception as e:
-        st.error(f"❌ Lỗi khi lưu dữ liệu: {str(e)}")
+        st.error(f"❌ Lỗi không xác định: {e}")
         return None
 
 def get_next_question_logic(current_q, answers):
@@ -217,13 +233,13 @@ def get_next_question_logic(current_q, answers):
             return 'B18'
         return 'B10'
     
-    # B10 - kiểm tra có chọn 'info' trong B9 không
+    # B10 - kiểm tra có chọn '1' (info) trong B9 không
     if current_q == 'B10':
         b9_answers = answers.get('B9', [])
-        if 'info' in b9_answers:
+        if '1' in b9_answers:
             return 'B10_1'
         else:
-            return 'B10_2'
+            return 'B11'
     
     if current_q == 'B10_1':
         return 'B10_1a'
@@ -231,9 +247,9 @@ def get_next_question_logic(current_q, answers):
         if answers.get('B10_1a') == '1':  # Không đủ
             return 'B10_1b'
         else:
-            return 'B11'
+            return 'B10_2'  # Chuyển sang nhánh "không nhận được"
     if current_q == 'B10_1b':
-        return 'B11'
+        return 'B10_2'  # Sau khi hỏi lý do, chuyển sang nhánh "không nhận được"
     
     if current_q == 'B10_2':
         return 'B10_2a'
@@ -245,13 +261,13 @@ def get_next_question_logic(current_q, answers):
     if current_q == 'B10_2b':
         return 'B11'
     
-    # B11 - kiểm tra có chọn 'medicine' trong B9 không
+    # B11 - kiểm tra có chọn '2' (medicine) trong B9 không
     if current_q == 'B11':
         b9_answers = answers.get('B9', [])
-        if 'medicine' in b9_answers:
+        if '2' in b9_answers:
             return 'B11_1'
         else:
-            return 'B11_2'
+            return 'B12'
     
     if current_q == 'B11_1':
         return 'B11_1a'
@@ -259,9 +275,9 @@ def get_next_question_logic(current_q, answers):
         if answers.get('B11_1a') == '1':
             return 'B11_1b'
         else:
-            return 'B12'
+            return 'B11_2'
     if current_q == 'B11_1b':
-        return 'B12'
+        return 'B11_2'
     
     if current_q == 'B11_2':
         return 'B11_2a'
@@ -273,14 +289,14 @@ def get_next_question_logic(current_q, answers):
     if current_q == 'B11_2b':
         return 'B12'
     
-    # B12 - kiểm tra có chọn therapy trong B9 không
+    # B12 - kiểm tra có chọn '3', '4', hoặc '5' (therapy/counselling) trong B9 không
     if current_q == 'B12':
         b9_answers = answers.get('B9', [])
-        has_therapy = 'psychotherapy' in b9_answers or 'cbt' in b9_answers or 'counselling' in b9_answers
+        has_therapy = '3' in b9_answers or '4' in b9_answers or '5' in b9_answers
         if has_therapy:
             return 'B12_1'
         else:
-            return 'B12_2'
+            return 'B13'
     
     if current_q == 'B12_1':
         return 'B12_1a'
@@ -288,9 +304,9 @@ def get_next_question_logic(current_q, answers):
         if answers.get('B12_1a') == '1':
             return 'B12_1b'
         else:
-            return 'B13'
+            return 'B12_2'
     if current_q == 'B12_1b':
-        return 'B13'
+        return 'B12_2'
     
     if current_q == 'B12_2':
         return 'B12_2a'
@@ -302,13 +318,13 @@ def get_next_question_logic(current_q, answers):
     if current_q == 'B12_2b':
         return 'B13'
     
-    # B13 - practical help
+    # B13 - kiểm tra có chọn '6' (practical) trong B9 không
     if current_q == 'B13':
         b9_answers = answers.get('B9', [])
-        if 'practical' in b9_answers:
+        if '6' in b9_answers:
             return 'B13_1'
         else:
-            return 'B13_2'
+            return 'B14'
     
     if current_q == 'B13_1':
         return 'B13_1a'
@@ -316,9 +332,9 @@ def get_next_question_logic(current_q, answers):
         if answers.get('B13_1a') == '1':
             return 'B13_1b'
         else:
-            return 'B14'
+            return 'B13_2'
     if current_q == 'B13_1b':
-        return 'B14'
+        return 'B13_2'
     
     if current_q == 'B13_2':
         return 'B13_2a'
@@ -330,14 +346,14 @@ def get_next_question_logic(current_q, answers):
     if current_q == 'B13_2b':
         return 'B14'
     
-    # B14 - work/selfcare
+    # B14 - kiểm tra có chọn '7' hoặc '8' (work/selfcare) trong B9 không
     if current_q == 'B14':
         b9_answers = answers.get('B9', [])
-        has_work_selfcare = 'work' in b9_answers or 'selfcare' in b9_answers
+        has_work_selfcare = '7' in b9_answers or '8' in b9_answers
         if has_work_selfcare:
             return 'B14_1'
         else:
-            return 'B14_2'
+            return 'B15'
     
     if current_q == 'B14_1':
         return 'B14_1a'
@@ -345,9 +361,9 @@ def get_next_question_logic(current_q, answers):
         if answers.get('B14_1a') == '1':
             return 'B14_1b'
         else:
-            return 'B15'
+            return 'B14_2'
     if current_q == 'B14_1b':
-        return 'B15'
+        return 'B14_2'
     
     if current_q == 'B14_2':
         return 'B14_2a'
@@ -359,13 +375,13 @@ def get_next_question_logic(current_q, answers):
     if current_q == 'B14_2b':
         return 'B15'
     
-    # B15 - work specific
+    # B15 - kiểm tra có chọn '7' (work specific) trong B9 không
     if current_q == 'B15':
         b9_answers = answers.get('B9', [])
-        if 'work' in b9_answers:
+        if '7' in b9_answers:
             return 'B15_1'
         else:
-            return 'B15_2'
+            return 'B16'
     
     if current_q == 'B15_1':
         return 'B15_1a'
@@ -373,9 +389,9 @@ def get_next_question_logic(current_q, answers):
         if answers.get('B15_1a') == '1':
             return 'B15_1b'
         else:
-            return 'B16'
+            return 'B15_2'
     if current_q == 'B15_1b':
-        return 'B16'
+        return 'B15_2'
     
     if current_q == 'B15_2':
         return 'B15_2a'
@@ -387,13 +403,13 @@ def get_next_question_logic(current_q, answers):
     if current_q == 'B15_2b':
         return 'B16'
     
-    # B16 - selfcare specific
+    # B16 - kiểm tra có chọn '8' (selfcare specific) trong B9 không
     if current_q == 'B16':
         b9_answers = answers.get('B9', [])
-        if 'selfcare' in b9_answers:
+        if '8' in b9_answers:
             return 'B16_1'
         else:
-            return 'B16_2'
+            return 'B17'
     
     if current_q == 'B16_1':
         return 'B16_1a'
@@ -401,9 +417,9 @@ def get_next_question_logic(current_q, answers):
         if answers.get('B16_1a') == '1':
             return 'B16_1b'
         else:
-            return 'B17'
+            return 'B16_2'
     if current_q == 'B16_1b':
-        return 'B17'
+        return 'B16_2'
     
     if current_q == 'B16_2':
         return 'B16_2a'
@@ -415,13 +431,13 @@ def get_next_question_logic(current_q, answers):
     if current_q == 'B16_2b':
         return 'B17'
     
-    # B17 - social
+    # B17 - kiểm tra có chọn '9' (social) trong B9 không
     if current_q == 'B17':
         b9_answers = answers.get('B9', [])
-        if 'social' in b9_answers:
+        if '9' in b9_answers:
             return 'B17_1'
         else:
-            return 'B17_2'
+            return 'B18'
     
     if current_q == 'B17_1':
         return 'B17_1a'
@@ -429,9 +445,9 @@ def get_next_question_logic(current_q, answers):
         if answers.get('B17_1a') == '1':
             return 'B17_1b'
         else:
-            return 'END'
+            return 'B17_2'
     if current_q == 'B17_1b':
-        return 'END'
+        return 'B17_2'
     
     if current_q == 'B17_2':
         return 'B17_2a'
@@ -439,9 +455,9 @@ def get_next_question_logic(current_q, answers):
         if answers.get('B17_2a') == '5':
             return 'B17_2b'
         else:
-            return 'END'
+            return 'B18'
     if current_q == 'B17_2b':
-        return 'END'
+        return 'B18'
     
     # Logic B18 - khi không có hospitalization/consultation
     if current_q == 'B18':
@@ -569,7 +585,7 @@ SURVEY_CONFIG = {
         'next': 'B3'
     },
     'B3': {
-        'q': 'Trong 12 tháng vừa rồi bạn đã từng nhập viện qua đêm tại một bệnh viện tâm thần không?',
+        'q': 'Trong 12 tháng vừa rồi bạn đã từng (cũng đã) nhập viện qua đêm tại một bệnh viện tâm thần không?',
         'type': 'radio',
         'opts': [('Có', '5'), ('Không', '1')],
         'next_logic': lambda a: 'B3a1' if a == '5' else 'B4'
@@ -666,74 +682,24 @@ SURVEY_CONFIG = {
         ],
         'next': 'B9'
     },
-    'B6_B8_check': {
-        'q': 'Cảm ơn bạn đã cung cấp thông tin',
-        'type': 'info',
-        'next': None  # Removed - no longer needed
-    },
-    'B6_B8_check': {
-        'q': 'Cảm ơn bạn đã cung cấp thông tin về các lần tư vấn',
-        'type': 'info',
-        'next': None  # Logic phức tạp
-    },
     'B9': {
         'q': 'dynamic',  # Will be set dynamically in render_question
         'type': 'checkbox',
         'opts': [
-            ('Thông tin về bệnh tâm thần, các phương pháp điều trị và các dịch vụ hiện hành có sẵn?', 'info'),
-            ('Thuốc hoặc viên uống dạng nén?', 'medicine'),
-            ('Tâm lý trị liệu - thảo luận về các vấn đề nguyên nhân bắt nguồn từ quá khứ của bạn?', 'psychotherapy'),
-            ('Liệu pháp nhận thức hành vi - học cách để thay đổi suy nghĩ, hành vi và cảm xúc của bạn?', 'cbt'),
-            ('Tham vấn - giúp nói chuyện để giải quyết các vấn đề của bạn.', 'counselling'),
-            ('Giúp giải quyết các vấn đề thực tế, chẳng hạn như nhà ở hoặc tiền bạc?', 'practical'),
-            ('Giúp cải thiện khả năng làm việc, hoặc sử dụng thời gian của bạn theo những cách khác nhau một cách hiệu quả hơn?', 'work'),
-            ('Giúp bạn cải thiện khả năng tự chăm sóc bản thân hoặc nhà cửa.', 'selfcare'),
-            ('Giúp bạn gặp gỡ kết nối với mọi người để được hỗ trợ và có người đồng hành?', 'social'),
-            ('Khác – ví dụ rõ: ______________________________________.', 'other')
+            ('Thông tin về bệnh tâm thần, các phương pháp điều trị và các dịch vụ hiện hành có sẵn?', '1'),
+            ('Thuốc hoặc viên uống dạng nén?', '2'),
+            ('Tâm lý trị liệu - thảo luận về các vấn đề nguyên nhân bắt nguồn từ quá khứ của bạn?', '3'),
+            ('Liệu pháp nhận thức hành vi - học cách để thay đổi suy nghĩ, hành vi và cảm xúc của bạn?', '4'),
+            ('Tham vấn - giúp nói chuyện để giải quyết các vấn đề của bạn.', '5'),
+            ('Giúp giải quyết các vấn đề thực tế, chẳng hạn như nhà ở hoặc tiền bạc?', '6'),
+            ('Giúp cải thiện khả năng làm việc, hoặc sử dụng thời gian của bạn theo những cách khác nhau một cách hiệu quả hơn?', '7'),
+            ('Giúp bạn cải thiện khả năng tự chăm sóc bản thân hoặc nhà cửa.', '8'),
+            ('Giúp bạn gặp gỡ kết nối với mọi người để được hỗ trợ và có người đồng hành?', '9'),
+            ('Khác – ví dụ rõ: ______________________________________.', '10')
         ],
         'next': None  # Logic phức tạp
     },
-    # Router questions for B10-B17 (these determine which branch to take)
-    'B10': {
-        'q': 'B10 - Thông tin giúp đỡ',
-        'type': 'info',
-        'next': None  # Logic handles this
-    },
-    'B11': {
-        'q': 'B11 - Thuốc hoặc viên uống',
-        'type': 'info',
-        'next': None  # Logic handles this
-    },
-    'B12': {
-        'q': 'B12 - Tâm lý trị liệu/liệu pháp trò chuyện',
-        'type': 'info',
-        'next': None  # Logic handles this
-    },
-    'B13': {
-        'q': 'B13 - Giúp đỡ thực tế',
-        'type': 'info',
-        'next': None  # Logic handles this
-    },
-    'B14': {
-        'q': 'B14 - Giúp đỡ công việc/tự chăm sóc',
-        'type': 'info',
-        'next': None  # Logic handles this
-    },
-    'B15': {
-        'q': 'B15 - Giúp đỡ công việc (cụ thể)',
-        'type': 'info',
-        'next': None  # Logic handles this
-    },
-    'B16': {
-        'q': 'B16 - Giúp đỡ tự chăm sóc (cụ thể)',
-        'type': 'info',
-        'next': None  # Logic handles this
-    },
-    'B17': {
-        'q': 'B17 - Giúp đỡ kết nối xã hội',
-        'type': 'info',
-        'next': None  # Logic handles this
-    },
+    # B9 logic branches directly to B10_1 or B11 based on selected codes
     'B10_1': {
         'q': 'Bạn đã đề cập rằng bạn đã nhận được thông tin về bệnh tâm thần, các phương pháp điều trị và các dịch vụ có sẵn.',
         'type': 'info',
@@ -760,7 +726,7 @@ SURVEY_CONFIG = {
         'next': 'B11'
     },
     'B10_2': {
-        'q': 'Bạn đã đề cập rằng bạn không nhận được thông tin về bệnh tâm thần, việc điều trị và các dịch vụ có sẵn.',
+        'q': 'Bạn đã đề cập rằng bạn không nhận được thông tin hoặc lời khuyên.',
         'type': 'info',
         'next': 'B10_2a'
     },
@@ -810,31 +776,6 @@ SURVEY_CONFIG = {
         ],
         'next': 'B12'
     },
-    'B11_2': {
-        'q': 'Bạn đã đề cập rằng bạn không nhận được thuốc hoặc viên uống dạng nén.',
-        'type': 'info',
-        'next': 'B11_2a'
-    },
-    'B11_2a': {
-        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
-        'type': 'radio',
-        'opts': [('Không cần', '1'), ('Có cần', '5')],
-        'next': None
-    },
-    'B11_2b': {
-        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
-        'type': 'radio',
-        'opts': [
-            ('Tôi muốn tự mình xoay xở', '1'),
-            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
-            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
-            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
-            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
-            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
-            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
-        ],
-        'next': 'B12'
-    },
     'B12_1': {
         'q': 'Bạn đã đề cập rằng bạn đã nhận được dịch vụ tham vấn hoặc một liệu pháp trò chuyện.',
         'type': 'info',
@@ -854,31 +795,6 @@ SURVEY_CONFIG = {
             ('Tôi không nghĩ có bất cứ điều gì khác có thể giúp ích', '2'),
             ('Tôi không biết làm thế nào hoặc ở đâu để nhận được nhiều sự giúp đỡ hơn', '3'),
             ('Tôi e ngại trong việc yêu cầu giúp đỡ thêm, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
-            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
-            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
-            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
-        ],
-        'next': 'B13'
-    },
-    'B12_2': {
-        'q': 'Bạn đã đề cập rằng bạn không nhận được dịch vụ tham vấn hoặc một liệu pháp trò chuyện.',
-        'type': 'info',
-        'next': 'B12_2a'
-    },
-    'B12_2a': {
-        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
-        'type': 'radio',
-        'opts': [('Không cần', '1'), ('Có cần', '5')],
-        'next': None
-    },
-    'B12_2b': {
-        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
-        'type': 'radio',
-        'opts': [
-            ('Tôi muốn tự mình xoay xở', '1'),
-            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
-            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
-            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
             ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
             ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
             ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
@@ -910,31 +826,6 @@ SURVEY_CONFIG = {
         ],
         'next': 'B14'
     },
-    'B13_2': {
-        'q': 'Bạn đã đề cập rằng bạn không nhận được sự giúp đỡ để giải quyết các vấn đề thực tế như nhà ở hoặc tiền bạc.',
-        'type': 'info',
-        'next': 'B13_2a'
-    },
-    'B13_2a': {
-        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
-        'type': 'radio',
-        'opts': [('Không cần', '1'), ('Có cần', '5')],
-        'next': None
-    },
-    'B13_2b': {
-        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
-        'type': 'radio',
-        'opts': [
-            ('Tôi muốn tự mình xoay xở', '1'),
-            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
-            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
-            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
-            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
-            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
-            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
-        ],
-        'next': 'B14'
-    },
     'B14_1': {
         'q': 'Bạn đã đề cập rằng bạn nhận được sự giúp đỡ để cải thiện khả năng làm việc, tự chăm sóc bản thân hoặc sử dụng thời gian.',
         'type': 'info',
@@ -954,31 +845,6 @@ SURVEY_CONFIG = {
             ('Tôi không nghĩ có bất cứ điều gì khác có thể giúp ích', '2'),
             ('Tôi không biết làm thế nào hoặc ở đâu để nhận được nhiều sự giúp đỡ hơn', '3'),
             ('Tôi e ngại trong việc yêu cầu giúp đỡ thêm, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
-            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
-            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
-            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
-        ],
-        'next': 'B15'
-    },
-    'B14_2': {
-        'q': 'Bạn đã đề cập rằng bạn không nhận được sự giúp đỡ để cải thiện khả năng làm việc, tự chăm sóc bản thân hoặc sử dụng thời gian.',
-        'type': 'info',
-        'next': 'B14_2a'
-    },
-    'B14_2a': {
-        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
-        'type': 'radio',
-        'opts': [('Không cần', '1'), ('Có cần', '5')],
-        'next': None
-    },
-    'B14_2b': {
-        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
-        'type': 'radio',
-        'opts': [
-            ('Tôi muốn tự mình xoay xở', '1'),
-            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
-            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
-            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
             ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
             ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
             ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
@@ -1010,31 +876,6 @@ SURVEY_CONFIG = {
         ],
         'next': 'B16'
     },
-    'B15_2': {
-        'q': 'Cụ thể bạn đã đề cập rằng bạn không nhận được sự giúp đỡ để cải thiện khả năng làm việc, hoặc sử dụng thời gian của bạn theo những cách khác nhau.',
-        'type': 'info',
-        'next': 'B15_2a'
-    },
-    'B15_2a': {
-        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
-        'type': 'radio',
-        'opts': [('Không cần', '1'), ('Có cần', '5')],
-        'next': None
-    },
-    'B15_2b': {
-        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
-        'type': 'radio',
-        'opts': [
-            ('Tôi muốn tự mình xoay xở', '1'),
-            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
-            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
-            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
-            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
-            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
-            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
-        ],
-        'next': 'B16'
-    },
     'B16_1': {
         'q': 'Cụ thể bạn đã đề cập rằng bạn nhận được sự giúp đỡ để cải thiện khả năng tự chăm sóc bản thân hoặc nhà cửa của bạn.',
         'type': 'info',
@@ -1060,31 +901,6 @@ SURVEY_CONFIG = {
         ],
         'next': 'B17'
     },
-    'B16_2': {
-        'q': 'Cụ thể bạn đã đề cập rằng bạn không nhận được sự giúp đỡ để cải thiện khả năng tự chăm sóc bản thân hoặc nhà cửa của bạn.',
-        'type': 'info',
-        'next': 'B16_2a'
-    },
-    'B16_2a': {
-        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
-        'type': 'radio',
-        'opts': [('Không cần', '1'), ('Có cần', '5')],
-        'next': None
-    },
-    'B16_2b': {
-        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
-        'type': 'radio',
-        'opts': [
-            ('Tôi muốn tự mình xoay xở', '1'),
-            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
-            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
-            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
-            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
-            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
-            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
-        ],
-        'next': 'B17'
-    },
     'B17_1': {
         'q': 'Bạn đã đề cập rằng bạn nhận được sự giúp đỡ để gặp gỡ kết nối với mọi người để được hỗ trợ và có người đồng hành.',
         'type': 'info',
@@ -1104,31 +920,6 @@ SURVEY_CONFIG = {
             ('Tôi không nghĩ có bất cứ điều gì khác có thể giúp ích', '2'),
             ('Tôi không biết làm thế nào hoặc ở đâu để nhận được nhiều sự giúp đỡ hơn', '3'),
             ('Tôi e ngại trong việc yêu cầu giúp đỡ thêm, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
-            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
-            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
-            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
-        ],
-        'next': 'END'
-    },
-    'B17_2': {
-        'q': 'Bạn đã đề cập rằng bạn không nhận được sự giúp đỡ để gặp gỡ kết nối với mọi người để được hỗ trợ và có người đồng hành.',
-        'type': 'info',
-        'next': 'B17_2a'
-    },
-    'B17_2a': {
-        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
-        'type': 'radio',
-        'opts': [('Không cần', '1'), ('Có cần', '5')],
-        'next': None
-    },
-    'B17_2b': {
-        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
-        'type': 'radio',
-        'opts': [
-            ('Tôi muốn tự mình xoay xở', '1'),
-            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
-            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
-            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
             ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
             ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
             ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
