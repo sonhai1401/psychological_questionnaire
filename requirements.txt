@@ -1,4 +1,9 @@
 streamlit==1.28.0
+pandas==2.1.1
+
+google-auth==2.26.2
 google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
 google-api-python-client==2.107.0
+googleapis-common-protos==1.63.0
+httplib2==0.22.0
