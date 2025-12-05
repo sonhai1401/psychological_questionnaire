@@ -1,10 +1,17 @@
 import streamlit as st
 import json
 from datetime import datetime
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 import os
+
+# Cố gắng import Google Drive API nếu có sẵn
+try:
+    from google.oauth2.service_account import Credentials
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaFileUpload
+    import io
+    GOOGLE_DRIVE_AVAILABLE = True
+except ImportError:
+    GOOGLE_DRIVE_AVAILABLE = False
 
 # Cấu hình trang
 st.set_page_config(
@@ -52,292 +59,6 @@ if 'completed' not in st.session_state:
 if 'respondent_name' not in st.session_state:
     st.session_state.respondent_name = ""
 
-# Cấu hình bảng hỏi - mapping từ document
-SURVEY_CONFIG = {
-    'A1': {
-        'question': 'ANH/CHỊ CÓ PHẢI LÀ THÂN CHỦ HOẶC BỆNH NHÂN ĐÃ CÓ HIỂU BIẾT VỀ CÁC DỊCH VỤ SỨC KHỎE TÂM THẦN KHÔNG?',
-        'type': 'radio',
-        'options': [
-            {'label': 'Có', 'value': '5', 'next': 'A2'},
-            {'label': 'Không', 'value': '1', 'next': 'A2'}
-        ]
-    },
-    'A2': {
-        'question': 'Hãy nghĩ lại trong năm vừa rồi, và xem xét liệu bạn có gặp bất cứ khó khăn nào liên quan đến vấn đề sức khỏe tâm thần của mình trong thời gian đó không: Bạn có nghĩ rằng, trong năm vừa rồi, bạn đã có bất cứ lúc nào gặp phải các vấn đề với sức khỏe tâm thần của bản thân không?',
-        'type': 'radio',
-        'options': [
-            {'label': 'Có', 'value': '5', 'next': 'A3'},
-            {'label': 'Không', 'value': '1', 'next': 'B1'}
-        ]
-    },
-    'A3': {
-        'question': 'Bạn sẽ gọi vấn đề hoặc những vấn đề mà bạn gặp phải liên quan đến sức khỏe tâm thần của mình là gì?',
-        'type': 'textarea',
-        'next': 'B1',
-        'note': '(THĂM DÒ NẾU CẦN THIẾT. THÔNG TIN CÓ THỂ ĐƯỢC THÊM VÀO ĐÂY TỪ CÁC CÂU TRẢ LỜI TRƯỚC ĐÓ TRONG CUỘC PHỎNG VẤN)'
-    },
-    'B1': {
-        'question': 'Trong 12 tháng qua bạn đã bao giờ từng nhập viện ít nhất là một đêm tại bất kỳ bệnh viện nào không?',
-        'type': 'radio',
-        'options': [
-            {'label': 'Có', 'value': '5', 'next': 'B2'},
-            {'label': 'Không', 'value': '1', 'next': 'B5'}
-        ]
-    },
-    'B2': {
-        'question': 'Bạn đã bao giờ từng nhập viện qua đêm tại một bệnh viện đa khoa không?',
-        'type': 'radio',
-        'options': [
-            {'label': 'Có', 'value': '5', 'next': 'B2a'},
-            {'label': 'Không', 'value': '1', 'next': 'B3'}
-        ]
-    },
-    'B2a': {
-        'question': 'Việc bạn nhập viện đó có phải là do bệnh lý về thể chất hay không?',
-        'type': 'radio',
-        'options': [
-            {'label': 'Có', 'value': '5', 'next': 'B2a1'},
-            {'label': 'Không', 'value': '1', 'next': 'B2b'}
-        ]
-    },
-    'B2a1': {
-        'question': 'Trong 12 tháng vừa rồi, đã có bao nhiêu lần bạn nhập viện ít nhất một đêm tại bệnh viện đa khoa do bệnh lý về thể chất?',
-        'type': 'number',
-        'next': 'B2a2'
-    },
-    'B2a2': {
-        'question': 'Tổng cộng bạn đã ở lại bao nhiêu đêm tại bệnh viện đa khoa do bệnh lý về thể chất?',
-        'type': 'number',
-        'next': 'B2b'
-    },
-    'B2b': {
-        'question': 'Bạn đã bao giờ từng nhập viện qua đêm tại một bệnh viện đa khoa do các vấn đề thần kinh hoặc tâm thần gây ra trong vòng 12 tháng qua không?',
-        'type': 'radio',
-        'options': [
-            {'label': 'Có', 'value': '5', 'next': 'B2b1'},
-            {'label': 'Không', 'value': '1', 'next': 'B3'}
-        ]
-    },
-    'B2b1': {
-        'question': 'Trong vòng 12 tháng qua, đã có bao nhiêu lần bạn từng nhập viện ít nhất một đêm tại bệnh viện đa khoa do các vấn đề thần kinh hoặc tâm thần gây ra?',
-        'type': 'number',
-        'next': 'B2b2'
-    },
-    'B2b2': {
-        'question': 'Tổng cộng bạn đã ở lại bao nhiêu đêm tại bệnh viện đa khoa vì ảnh hưởng của các vấn đề thần kinh hoặc tâm thần?',
-        'type': 'number',
-        'next': 'B2b3'
-    },
-    'B2b3': {
-        'question': 'Bạn đã nằm giường hạng dịch vụ hay phổ thông?',
-        'type': 'radio',
-        'options': [
-            {'label': 'Dịch vụ (tư nhân)', 'value': 'private', 'next': 'B3'},
-            {'label': 'Phổ thông (công)', 'value': 'public', 'next': 'B3'}
-        ]
-    },
-    'B3': {
-        'question': 'Trong 12 tháng vừa rồi bạn đã từng nhập viện qua đêm tại một bệnh viện tâm thần không?',
-        'type': 'radio',
-        'options': [
-            {'label': 'Có', 'value': '5', 'next': 'B3a1'},
-            {'label': 'Không', 'value': '1', 'next': 'B4'}
-        ]
-    },
-    'B3a1': {
-        'question': 'Trong vòng 12 tháng qua, đã bao nhiêu lần bạn nhập viện ít nhất một đêm tại bệnh viện tâm thần?',
-        'type': 'number',
-        'next': 'B3a2'
-    },
-    'B3a2': {
-        'question': 'Tổng cộng bạn đã ở lại bao nhiêu đêm tại bệnh viện tâm thần?',
-        'type': 'number',
-        'next': 'B3a3'
-    },
-    'B3a3': {
-        'question': 'Đó là bệnh viện tâm thần thuộc tư nhân hay Nhà Nước?',
-        'type': 'radio',
-        'options': [
-            {'label': 'Tư nhân', 'value': 'private', 'next': 'B4'},
-            {'label': 'Nhà Nước', 'value': 'public', 'next': 'B4'}
-        ]
-    },
-    'B4': {
-        'question': 'Trong 12 tháng vừa rồi bạn đã từng nhập viện qua đêm tại bất kỳ đơn vị cai nghiện ma túy và rượu bia nào ở bệnh viện không?',
-        'type': 'radio',
-        'options': [
-            {'label': 'Có', 'value': '5', 'next': 'B4a1'},
-            {'label': 'Không', 'value': '1', 'next': 'B5'}
-        ]
-    },
-    'B4a1': {
-        'question': 'Trong vòng 12 tháng qua, đã có bao nhiêu lần bạn nhập viện ít nhất một đêm tại các đơn vị cai nghiện ma túy và rượu bia?',
-        'type': 'number',
-        'next': 'B4a2'
-    },
-    'B4a2': {
-        'question': 'Tổng cộng bạn đã ở lại bao nhiêu đêm tại các đơn vị cai nghiện ma túy và rượu bia?',
-        'type': 'number',
-        'next': 'B4a3'
-    },
-    'B4a3': {
-        'question': 'Đó là đơn vị thuộc tư nhân hay Nhà Nước?',
-        'type': 'radio',
-        'options': [
-            {'label': 'Tư nhân', 'value': 'private', 'next': 'B5'},
-            {'label': 'Nhà Nước', 'value': 'public', 'next': 'B5'}
-        ]
-    },
-    'B5': {
-        'question': 'Trong 12 tháng qua, (ngoài thời gian bạn đã ở bệnh viện), bạn có gặp bất kỳ bác sĩ hoặc chuyên gia y tế nào liên quan đến tình trạng sức khỏe của chính bạn không?',
-        'type': 'radio',
-        'note': 'Các chuyên gia y tế bao gồm: Bác sĩ đa khoa, Bác sĩ chuyên khoa, Bác sĩ tâm thần, Nhà tâm lý học, Nhân viên công tác xã hội, Tư vấn viên, Điều dưỡng/Y tá, v.v.',
-        'options': [
-            {'label': 'Có', 'value': '5', 'next': 'B5a'},
-            {'label': 'Không', 'value': '1', 'next': 'B18'}
-        ]
-    },
-    'B5a': {
-        'question': 'Bạn đã gặp những chuyên gia y tế nào? (Chọn tất cả các đáp án phù hợp)',
-        'type': 'checkbox',
-        'options': [
-            {'label': 'Bác sĩ đa khoa', 'value': 'gp'},
-            {'label': 'Bác sĩ chẩn đoán hình ảnh hoặc chuyên khoa X-quang', 'value': 'radiologist'},
-            {'label': 'Bác sĩ bệnh lý học hoặc chuyên khoa xét nghiệm máu', 'value': 'pathologist'},
-            {'label': 'Bác sĩ nội khoa hoặc chuyên viên y tế khác', 'value': 'physician'},
-            {'label': 'Bác sĩ phẫu thuật hoặc bác sĩ phụ khoa', 'value': 'surgeon'},
-            {'label': 'Bác sĩ tâm thần', 'value': 'psychiatrist'},
-            {'label': 'Nhà tâm lý học', 'value': 'psychologist'},
-            {'label': 'Nhân viên công tác xã hội hoặc cán bộ phúc lợi', 'value': 'social_worker'},
-            {'label': 'Tư vấn viên về tình trạng nghiện chất', 'value': 'drug_counsellor'},
-            {'label': 'Các tư vấn viên khác', 'value': 'other_counsellor'},
-            {'label': 'Điều dưỡng/Y tá', 'value': 'nurse'},
-            {'label': 'Nhóm chuyên gia sức khỏe tâm thần', 'value': 'mental_health_team'},
-            {'label': 'Dược sĩ tư vấn chuyên môn', 'value': 'pharmacist'},
-            {'label': 'Nhân viên xe cứu thương', 'value': 'ambulance'},
-            {'label': 'Các chuyên gia y tế khác', 'value': 'other'}
-        ],
-        'next': 'B6_check'
-    },
-    'B6_check': {
-        'question': 'Tiếp theo chúng tôi sẽ hỏi chi tiết về các lần tham vấn với chuyên gia y tế',
-        'type': 'info',
-        'next': 'B9'
-    },
-    'B9': {
-        'question': 'Bạn đã nhận được hình thức giúp đỡ nào trong số này từ các cuộc tham vấn hoặc lần nhập viện, cho bất kỳ vấn đề nào liên quan đến sức khỏe tâm thần của bạn? (Chọn tất cả các đáp án phù hợp)',
-        'type': 'checkbox',
-        'options': [
-            {'label': 'Thông tin về bệnh tâm thần, các phương pháp điều trị và các dịch vụ hiện hành có sẵn', 'value': 'info'},
-            {'label': 'Thuốc hoặc viên uống dạng nén', 'value': 'medicine'},
-            {'label': 'Tâm lý trị liệu - thảo luận về các vấn đề nguyên nhân bắt nguồn từ quá khứ của bạn', 'value': 'psychotherapy'},
-            {'label': 'Liệu pháp nhận thức hành vi - học cách để thay đổi suy nghĩ, hành vi và cảm xúc của bạn', 'value': 'cbt'},
-            {'label': 'Tham vấn - giúp nói chuyện để giải quyết các vấn đề của bạn', 'value': 'counselling'},
-            {'label': 'Giúp giải quyết các vấn đề thực tế, chẳng hạn như nhà ở hoặc tiền bạc', 'value': 'practical'},
-            {'label': 'Giúp cải thiện khả năng làm việc, hoặc sử dụng thời gian hiệu quả hơn', 'value': 'work'},
-            {'label': 'Giúp bạn cải thiện khả năng tự chăm sóc bản thân hoặc nhà cửa', 'value': 'selfcare'},
-            {'label': 'Giúp bạn gặp gỡ kết nối với mọi người để được hỗ trợ và có người đồng hành', 'value': 'social'},
-            {'label': 'Khác', 'value': 'other'}
-        ],
-        'next': 'B10_check'
-    },
-    'B10_check': {
-        'question': 'Tiếp theo chúng tôi sẽ hỏi về mức độ đầy đủ của các hình thức giúp đỡ bạn đã nhận',
-        'type': 'info',
-        'next': 'END'
-    },
-    'B18': {
-        'question': 'Tôi hiểu bạn đã gặp vấn đề với tình trạng sức khỏe tâm thần của bản thân nhưng bạn đã không đề cập đến việc nằm viện hoặc nhận sự giúp đỡ từ bất kỳ chuyên gia y tế nào. Liệu có bất kỳ hình thức giúp đỡ nào mà bạn nghĩ rằng mình cần trong 12 tháng qua nhưng lại không nhận được hay không?',
-        'type': 'radio',
-        'options': [
-            {'label': 'Có', 'value': '5', 'next': 'B18a'},
-            {'label': 'Không', 'value': '1', 'next': 'END'}
-        ]
-    },
-    'B18a': {
-        'question': 'Bạn có nghĩ rằng bạn cần các thông tin về bệnh tâm thần, phương pháp điều trị và các dịch vụ hiện hành có sẵn không?',
-        'type': 'radio',
-        'options': [
-            {'label': 'Có', 'value': '5', 'next': 'B18a_reason'},
-            {'label': 'Không', 'value': '1', 'next': 'B19'}
-        ]
-    },
-    'B18a_reason': {
-        'question': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính',
-        'type': 'radio',
-        'options': [
-            {'label': 'Tôi muốn tự mình xoay xở', 'value': '1'},
-            {'label': 'Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', 'value': '2'},
-            {'label': 'Tôi không biết nhận sự giúp đỡ ở đâu', 'value': '3'},
-            {'label': 'Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ người khác nghĩ gì về tôi', 'value': '4'},
-            {'label': 'Tôi không đủ khả năng chi trả tiền bạc', 'value': '5'},
-            {'label': 'Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', 'value': '6'},
-            {'label': 'Tôi đã nhận được sự giúp đỡ từ nguồn khác', 'value': '7'}
-        ],
-        'next': 'B19'
-    },
-    'B19': {
-        'question': 'Bạn có nghĩ rằng bạn cần thuốc hoặc viên uống dạng nén không?',
-        'type': 'radio',
-        'options': [
-            {'label': 'Có', 'value': '5', 'next': 'B19_reason'},
-            {'label': 'Không', 'value': '1', 'next': 'B20'}
-        ]
-    },
-    'B19_reason': {
-        'question': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính',
-        'type': 'radio',
-        'options': [
-            {'label': 'Tôi muốn tự mình xoay xở', 'value': '1'},
-            {'label': 'Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', 'value': '2'},
-            {'label': 'Tôi không biết nhận sự giúp đỡ ở đâu', 'value': '3'},
-            {'label': 'Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ người khác nghĩ gì về tôi', 'value': '4'},
-            {'label': 'Tôi không đủ khả năng chi trả tiền bạc', 'value': '5'},
-            {'label': 'Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', 'value': '6'},
-            {'label': 'Tôi đã nhận được sự giúp đỡ từ nguồn khác', 'value': '7'}
-        ],
-        'next': 'B20'
-    },
-    'B20': {
-        'question': 'Bạn có nghĩ rằng bạn cần tham vấn hoặc liệu pháp trò chuyện không?',
-        'type': 'radio',
-        'options': [
-            {'label': 'Có', 'value': '5', 'next': 'B20_reason'},
-            {'label': 'Không', 'value': '1', 'next': 'END'}
-        ]
-    },
-    'B20_reason': {
-        'question': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính',
-        'type': 'radio',
-        'options': [
-            {'label': 'Tôi muốn tự mình xoay xở', 'value': '1'},
-            {'label': 'Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', 'value': '2'},
-            {'label': 'Tôi không biết nhận sự giúp đỡ ở đâu', 'value': '3'},
-            {'label': 'Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ người khác nghĩ gì về tôi', 'value': '4'},
-            {'label': 'Tôi không đủ khả năng chi trả tiền bạc', 'value': '5'},
-            {'label': 'Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', 'value': '6'},
-            {'label': 'Tôi đã nhận được sự giúp đỡ từ nguồn khác', 'value': '7'}
-        ],
-        'next': 'END'
-    }
-}
-
-def get_next_question(current_q, answer):
-    """Xác định câu hỏi tiếp theo dựa vào logic"""
-    config = SURVEY_CONFIG[current_q]
-    
-    # Nếu là checkbox hoặc textarea, lấy next trực tiếp
-    if config['type'] in ['checkbox', 'textarea', 'number', 'info']:
-        return config.get('next', 'END')
-    
-    # Nếu là radio, tìm option được chọn
-    if config['type'] == 'radio':
-        for opt in config['options']:
-            if opt['value'] == answer:
-                return opt.get('next', 'END')
-    
-    return 'END'
-
 def upload_to_google_drive(respondent_name, answers):
     """Tải file CSV lên Google Drive"""
     try:
@@ -346,29 +67,37 @@ def upload_to_google_drive(respondent_name, answers):
         csv_content = f"Timestamp,Tên Người Trả Lời,Câu Hỏi,Câu Trả Lời\n"
         
         for q_id, answer in answers.items():
-            if q_id in SURVEY_CONFIG:
-                config = SURVEY_CONFIG[q_id]
-                question_text = config['question'].replace(',', ';').replace('\n', ' ')
-                
-                # Format câu trả lời
-                if isinstance(answer, list):
-                    answer_text = []
-                    for val in answer:
-                        for opt in config['options']:
-                            if opt['value'] == val:
-                                answer_text.append(opt['label'])
-                                break
-                    answer_str = '; '.join(answer_text)
-                elif config['type'] == 'radio':
-                    answer_str = ""
-                    for opt in config['options']:
-                        if opt['value'] == answer:
-                            answer_str = opt['label']
+            # Lấy config câu hỏi
+            q_config = None
+            for key, val in SURVEY_CONFIG.items():
+                if key == q_id:
+                    q_config = val
+                    break
+            
+            if not q_config:
+                continue
+            
+            question_text = q_config.get('q', f"Câu {q_id}").replace(',', ';').replace('\n', ' ')
+            
+            # Format câu trả lời
+            if isinstance(answer, list):
+                answer_text = []
+                for val in answer:
+                    for label, v in q_config.get('opts', []):
+                        if v == val:
+                            answer_text.append(label)
                             break
-                else:
-                    answer_str = str(answer).replace(',', ';').replace('\n', ' ')
-                
-                csv_content += f'"{timestamp}","{respondent_name}","{question_text}","{answer_str}"\n'
+                answer_str = '; '.join(answer_text)
+            elif q_config.get('type') == 'radio' and 'opts' in q_config:
+                answer_str = ""
+                for label, v in q_config['opts']:
+                    if v == answer:
+                        answer_str = label
+                        break
+            else:
+                answer_str = str(answer).replace(',', ';').replace('\n', ' ')
+            
+            csv_content += f'"{timestamp}","{respondent_name}","{question_text}","{answer_str}"\n'
         
         # Lưu vào local file
         local_filename = f"survey_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
@@ -376,116 +105,936 @@ def upload_to_google_drive(respondent_name, answers):
             f.write(csv_content)
         
         # Thử upload lên Google Drive nếu có credentials
-        try:
-            creds_file = 'credentials.json'
-            if os.path.exists(creds_file):
-                creds = Credentials.from_service_account_file(
-                    creds_file,
-                    scopes=['https://www.googleapis.com/auth/drive.file']
-                )
-                service = build('drive', 'v3', credentials=creds)
+        if GOOGLE_DRIVE_AVAILABLE:
+            try:
+                # Kiểm tra credentials từ Streamlit Secrets hoặc file cục bộ
+                creds_dict = None
                 
-                file_metadata = {'name': local_filename}
-                media = MediaFileUpload(local_filename, mimetype='text/csv')
+                # Cách 1: Lấy từ Streamlit Secrets (dành cho deployment)
+                if "google_credentials" in st.secrets:
+                    creds_dict = st.secrets["google_credentials"]
+                # Cách 2: Lấy từ file cục bộ (dành cho development)
+                elif os.path.exists('credentials.json'):
+                    import json as json_module
+                    with open('credentials.json', 'r') as f:
+                        creds_dict = json_module.load(f)
                 
-                service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-                st.success(f"✅ Dữ liệu đã được lưu và gửi lên Google Drive thành công!")
-            else:
+                if creds_dict:
+                    creds = Credentials.from_service_account_info(
+                        creds_dict,
+                        scopes=['https://www.googleapis.com/auth/drive.file']
+                    )
+                    service = build('drive', 'v3', credentials=creds)
+                    
+                    file_metadata = {'name': local_filename}
+                    media = MediaFileUpload(local_filename, mimetype='text/csv')
+                    
+                    service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+                    st.success(f"✅ Dữ liệu đã được lưu và gửi lên Google Drive thành công!")
+                else:
+                    st.success(f"✅ Dữ liệu đã được lưu thành công!\n(File: {local_filename})")
+                    st.info("💡 Để gửi lên Google Drive, cấu hình Streamlit Secrets")
+            except Exception as e:
                 st.success(f"✅ Dữ liệu đã được lưu thành công!\n(File: {local_filename})")
-                st.info("💡 Để gửi lên Google Drive, vui lòng cấu hình file credentials.json")
-        except Exception as e:
+                st.warning(f"⚠️ Không thể gửi lên Drive: {str(e)}")
+        else:
             st.success(f"✅ Dữ liệu đã được lưu thành công!\n(File: {local_filename})")
-            st.warning(f"⚠️ Không thể gửi lên Drive: {str(e)}")
+            st.info("💡 Để gửi lên Google Drive, cài đặt: `pip install google-auth-oauthlib google-auth-httplib2 google-api-python-client`")
         
         return local_filename
     except Exception as e:
         st.error(f"❌ Lỗi khi lưu dữ liệu: {str(e)}")
         return None
 
-def render_question(q_id):
+def get_next_question_logic(current_q, answers):
+    """Logic phân nhánh phức tạp theo document"""
+    
+    # Logic cho B5 - rất quan trọng
+    if current_q == 'B5':
+        answer = answers.get('B5')
+        B1 = answers.get('B1')
+        B2b = answers.get('B2b')
+        B3 = answers.get('B3')
+        B4 = answers.get('B4')
+        
+        # NẾU B1 VÀ B5 ĐƯỢC MÃ HÓA LÀ 1, CHUYỂN ĐẾN B15 (không có nhập viện và không tư vấn)
+        if B1 == '1' and answer == '1':
+            return 'B15'
+        
+        # NẾU B2b, B3 HOẶC B4 ĐƯỢC MÃ HÓA LÀ 5 VÀ B5 ĐƯỢC MÃ HÓA LÀ 1, CHUYỂN ĐẾN B9
+        if answer == '1' and (B2b == '5' or B3 == '5' or B4 == '5'):
+            return 'B9'
+        
+        # NẾU B2b, B3 VÀ B4 KHÔNG ĐƯỢC MÃ HÓA LÀ 5 VÀ B5 ĐƯỢC MÃ HÓA LÀ 1, CHUYỂN ĐẾN B18
+        if answer == '1' and B2b != '5' and B3 != '5' and B4 != '5':
+            return 'B18'
+        
+        # Nếu B5 = 5 (có gặp chuyên gia), chuyển đến B5a
+        if answer == '5':
+            return 'B5a'
+    
+    # Logic cho B5a - kiểm tra có tư vấn về mental health không
+    if current_q == 'B5a':
+        # Sau khi chọn chuyên gia, hỏi về số lần tư vấn
+        return 'B6'
+    
+    # Logic cho B7 - kiểm tra có tư vấn về mental health không
+    if current_q == 'B7':
+        b7_answer = answers.get('B7', 0)
+        # Nếu B7 > 0 (có tư vấn về mental health), hỏi B8 rồi B9
+        if b7_answer and int(b7_answer) > 0:
+            return 'B8'
+        else:
+            # Nếu B7 = 0 (không có tư vấn mental health), chuyển B18
+            b2b = answers.get('B2b', '1')
+            b3 = answers.get('B3', '1')
+            b4 = answers.get('B4', '1')
+            # Nếu có mental hospitalization thì hỏi B9, không thì B18
+            if b2b == '5' or b3 == '5' or b4 == '5':
+                return 'B9'
+            else:
+                return 'B18'
+    
+    # Logic cho B8 - sau khi hỏi lần tư vấn mental health
+    if current_q == 'B8':
+        # Chuyển đến B9 để hỏi loại giúp đỡ
+        return 'B9'
+    
+    # Logic cho các câu B10-B17 phụ thuộc vào B9
+    if current_q == 'B9':
+        selected = answers.get('B9', [])
+        if not selected:
+            return 'B18'
+        return 'B10'
+    
+    # B10 - kiểm tra có chọn 'info' trong B9 không
+    if current_q == 'B10':
+        b9_answers = answers.get('B9', [])
+        if 'info' in b9_answers:
+            return 'B10_1'
+        else:
+            return 'B10_2'
+    
+    if current_q == 'B10_1':
+        return 'B10_1a'
+    if current_q == 'B10_1a':
+        if answers.get('B10_1a') == '1':  # Không đủ
+            return 'B10_1b'
+        else:
+            return 'B11'
+    if current_q == 'B10_1b':
+        return 'B11'
+    
+    if current_q == 'B10_2':
+        return 'B10_2a'
+    if current_q == 'B10_2a':
+        if answers.get('B10_2a') == '5':  # Có cần
+            return 'B10_2b'
+        else:
+            return 'B11'
+    if current_q == 'B10_2b':
+        return 'B11'
+    
+    # B11 - kiểm tra có chọn 'medicine' trong B9 không
+    if current_q == 'B11':
+        b9_answers = answers.get('B9', [])
+        if 'medicine' in b9_answers:
+            return 'B11_1'
+        else:
+            return 'B11_2'
+    
+    if current_q == 'B11_1':
+        return 'B11_1a'
+    if current_q == 'B11_1a':
+        if answers.get('B11_1a') == '1':
+            return 'B11_1b'
+        else:
+            return 'B12'
+    if current_q == 'B11_1b':
+        return 'B12'
+    
+    if current_q == 'B11_2':
+        return 'B11_2a'
+    if current_q == 'B11_2a':
+        if answers.get('B11_2a') == '5':
+            return 'B11_2b'
+        else:
+            return 'B12'
+    if current_q == 'B11_2b':
+        return 'B12'
+    
+    # B12 - kiểm tra có chọn therapy trong B9 không
+    if current_q == 'B12':
+        b9_answers = answers.get('B9', [])
+        has_therapy = 'psychotherapy' in b9_answers or 'cbt' in b9_answers or 'counselling' in b9_answers
+        if has_therapy:
+            return 'B12_1'
+        else:
+            return 'B12_2'
+    
+    if current_q == 'B12_1':
+        return 'B12_1a'
+    if current_q == 'B12_1a':
+        if answers.get('B12_1a') == '1':
+            return 'B12_1b'
+        else:
+            return 'B13'
+    if current_q == 'B12_1b':
+        return 'B13'
+    
+    if current_q == 'B12_2':
+        return 'B12_2a'
+    if current_q == 'B12_2a':
+        if answers.get('B12_2a') == '5':
+            return 'B12_2b'
+        else:
+            return 'B13'
+    if current_q == 'B12_2b':
+        return 'B13'
+    
+    # B13 - practical help
+    if current_q == 'B13':
+        b9_answers = answers.get('B9', [])
+        if 'practical' in b9_answers:
+            return 'B13_1'
+        else:
+            return 'B13_2'
+    
+    if current_q == 'B13_1':
+        return 'B13_1a'
+    if current_q == 'B13_1a':
+        if answers.get('B13_1a') == '1':
+            return 'B13_1b'
+        else:
+            return 'B14'
+    if current_q == 'B13_1b':
+        return 'B14'
+    
+    if current_q == 'B13_2':
+        return 'B13_2a'
+    if current_q == 'B13_2a':
+        if answers.get('B13_2a') == '5':
+            return 'B13_2b'
+        else:
+            return 'B14'
+    if current_q == 'B13_2b':
+        return 'B14'
+    
+    # B14 - work/selfcare
+    if current_q == 'B14':
+        b9_answers = answers.get('B9', [])
+        has_work_selfcare = 'work' in b9_answers or 'selfcare' in b9_answers
+        if has_work_selfcare:
+            return 'B14_1'
+        else:
+            return 'B14_2'
+    
+    if current_q == 'B14_1':
+        return 'B14_1a'
+    if current_q == 'B14_1a':
+        if answers.get('B14_1a') == '1':
+            return 'B14_1b'
+        else:
+            return 'B15'
+    if current_q == 'B14_1b':
+        return 'B15'
+    
+    if current_q == 'B14_2':
+        return 'B14_2a'
+    if current_q == 'B14_2a':
+        if answers.get('B14_2a') == '5':
+            return 'B14_2b'
+        else:
+            return 'B15'
+    if current_q == 'B14_2b':
+        return 'B15'
+    
+    # B15 - work specific
+    if current_q == 'B15':
+        b9_answers = answers.get('B9', [])
+        if 'work' in b9_answers:
+            return 'B15_1'
+        else:
+            return 'B15_2'
+    
+    if current_q == 'B15_1':
+        return 'B15_1a'
+    if current_q == 'B15_1a':
+        if answers.get('B15_1a') == '1':
+            return 'B15_1b'
+        else:
+            return 'B16'
+    if current_q == 'B15_1b':
+        return 'B16'
+    
+    if current_q == 'B15_2':
+        return 'B15_2a'
+    if current_q == 'B15_2a':
+        if answers.get('B15_2a') == '5':
+            return 'B15_2b'
+        else:
+            return 'B16'
+    if current_q == 'B15_2b':
+        return 'B16'
+    
+    # B16 - selfcare specific
+    if current_q == 'B16':
+        b9_answers = answers.get('B9', [])
+        if 'selfcare' in b9_answers:
+            return 'B16_1'
+        else:
+            return 'B16_2'
+    
+    if current_q == 'B16_1':
+        return 'B16_1a'
+    if current_q == 'B16_1a':
+        if answers.get('B16_1a') == '1':
+            return 'B16_1b'
+        else:
+            return 'B17'
+    if current_q == 'B16_1b':
+        return 'B17'
+    
+    if current_q == 'B16_2':
+        return 'B16_2a'
+    if current_q == 'B16_2a':
+        if answers.get('B16_2a') == '5':
+            return 'B16_2b'
+        else:
+            return 'B17'
+    if current_q == 'B16_2b':
+        return 'B17'
+    
+    # B17 - social
+    if current_q == 'B17':
+        b9_answers = answers.get('B9', [])
+        if 'social' in b9_answers:
+            return 'B17_1'
+        else:
+            return 'B17_2'
+    
+    if current_q == 'B17_1':
+        return 'B17_1a'
+    if current_q == 'B17_1a':
+        if answers.get('B17_1a') == '1':
+            return 'B17_1b'
+        else:
+            return 'END'
+    if current_q == 'B17_1b':
+        return 'END'
+    
+    if current_q == 'B17_2':
+        return 'B17_2a'
+    if current_q == 'B17_2a':
+        if answers.get('B17_2a') == '5':
+            return 'B17_2b'
+        else:
+            return 'END'
+    if current_q == 'B17_2b':
+        return 'END'
+    
+    # Logic B18 - khi không có hospitalization/consultation
+    if current_q == 'B18':
+        # NẾU A1 VÀ A2 ĐƯỢC MÃ HÓA LÀ 1, KẾT THÚC
+        A1 = answers.get('A1')
+        A2 = answers.get('A2')
+        if A1 == '1' and A2 == '1':
+            return 'END'
+        
+        if answers.get('B18') == '1':  # Không cần
+            return 'END'
+        else:
+            return 'B18_info'
+    
+    if current_q == 'B18_info':
+        return 'B18_info_a' if answers.get('B18_info') == '5' else 'B19'
+    if current_q == 'B18_info_a':
+        return 'B19'
+    
+    if current_q == 'B19':
+        return 'B19_a' if answers.get('B19') == '5' else 'B20'
+    if current_q == 'B19_a':
+        return 'B20'
+    
+    if current_q == 'B20':
+        return 'B20_a' if answers.get('B20') == '5' else 'B21'
+    if current_q == 'B20_a':
+        return 'B21'
+    
+    if current_q == 'B21':
+        return 'B21_a' if answers.get('B21') == '5' else 'B22'
+    if current_q == 'B21_a':
+        return 'B22'
+    
+    if current_q == 'B22':
+        return 'B22_a' if answers.get('B22') == '5' else 'B23'
+    if current_q == 'B22_a':
+        return 'B23'
+    
+    if current_q == 'B23':
+        return 'B23_a' if answers.get('B23') == '5' else 'B24'
+    if current_q == 'B23_a':
+        return 'B24'
+    
+    if current_q == 'B24':
+        return 'B24_a' if answers.get('B24') == '5' else 'B25'
+    if current_q == 'B24_a':
+        return 'B25'
+    
+    if current_q == 'B25':
+        return 'B25_a' if answers.get('B25') == '5' else 'END'
+    if current_q == 'B25_a':
+        return 'END'
+    
+    return None
+
+# Cấu hình câu hỏi đầy đủ
+SURVEY_CONFIG = {
+    'A1': {
+        'q': 'ANH/CHỊ CÓ PHẢI LÀ THÂN CHỦ HOẶC BỆNH NHÂN ĐÃ CÓ HIỂU BIẾT VỀ CÁC DỊCH VỤ SỨC KHỎE TÂM THẦN KHÔNG?',
+        'type': 'radio',
+        'opts': [('Có', '5'), ('Không', '1')],
+        'next': 'A2'
+    },
+    'A2': {
+        'q': 'Hãy nghĩ lại trong năm vừa rồi, và xem xét liệu bạn có gặp bất cứ khó khăn nào liên quan đến vấn đề sức khỏe tâm thần của mình trong thời gian đó không: Bạn có nghĩ rằng, trong năm vừa rồi, bạn đã có bất cứ lúc nào gặp phải các vấn đề với sức khỏe tâm thần của bản thân không?',
+        'type': 'radio',
+        'opts': [('Có', '5'), ('Không', '1')],
+        'next_logic': lambda a: 'A3' if a == '5' else 'B1'
+    },
+    'A3': {
+        'q': 'Bạn sẽ gọi vấn đề hoặc những vấn đề mà bạn gặp phải liên quan đến sức khỏe tâm thần của mình là gì?',
+        'type': 'textarea',
+        'note': '(THĂM DÒ NẾU CẦN THIẾT. THÔNG TIN CÓ THỂ ĐƯỢC THÊM VÀO ĐÂY TỪ CÁC CÂU TRẢ LỜI TRƯỚC ĐÓ TRONG CUỘC PHỎNG VẤN)',
+        'next': 'B1'
+    },
+    'B1': {
+        'q': 'Trong 12 tháng qua bạn đã bao giờ từng nhập viện ít nhất là một đêm tại bất kỳ bệnh viện nào không?',
+        'type': 'radio',
+        'opts': [('Có', '5'), ('Không', '1')],
+        'next_logic': lambda a: 'B2' if a == '5' else 'B5'
+    },
+    'B2': {
+        'q': 'Bạn đã bao giờ từng nhập viện qua đêm tại một bệnh viện đa khoa không?',
+        'type': 'radio',
+        'opts': [('Có', '5'), ('Không', '1')],
+        'next_logic': lambda a: 'B2a' if a == '5' else 'B3'
+    },
+    'B2a': {
+        'q': 'Việc bạn nhập viện đó có phải là do bệnh lý về thể chất hay không?',
+        'type': 'radio',
+        'opts': [('Có', '5'), ('Không', '1')],
+        'next_logic': lambda a: 'B2a1' if a == '5' else 'B2b'
+    },
+    'B2a1': {
+        'q': 'Trong 12 tháng vừa rồi, đã có bao nhiêu lần bạn nhập viện ít nhất một đêm tại bệnh viện đa khoa do bệnh lý về thể chất?',
+        'type': 'number',
+        'next': 'B2a2'
+    },
+    'B2a2': {
+        'q': '(Đối với lần nhập viện đó/trong những lần nhập viện đó), tổng cộng bạn đã ở lại bao nhiêu đêm tại bệnh viện đa khoa do bệnh lý về thể chất?',
+        'type': 'number',
+        'next': 'B2b'
+    },
+    'B2b': {
+        'q': 'Bạn đã bao giờ từng nhập viện qua đêm tại một bệnh viện đa khoa do các vấn đề thần kinh hoặc tâm thần gây ra trong vòng 12 tháng qua không?',
+        'type': 'radio',
+        'opts': [('Có', '5'), ('Không', '1')],
+        'next_logic': lambda a: 'B2b1' if a == '5' else 'B3'
+    },
+    'B2b1': {
+        'q': 'Trong vòng 12 tháng qua, đã có bao nhiêu lần bạn từng nhập viện ít nhất một đêm tại bệnh viện đa khoa do các vấn đề thần kinh hoặc tâm thần gây ra?',
+        'type': 'number',
+        'next': 'B2b2'
+    },
+    'B2b2': {
+        'q': 'Đối với lần nhập viện đó/trong những lần nhập viện đó, tổng cộng bạn đã ở lại bao nhiêu đêm tại bệnh viện đa khoa vì ảnh hưởng của các vấn đề thần kinh hoặc tâm thần?',
+        'type': 'number',
+        'next': 'B2b3'
+    },
+    'B2b3': {
+        'q': 'Bạn đã nằm giường hạng dịch vụ hay phổ thông?',
+        'type': 'radio',
+        'opts': [('Dịch vụ (tư nhân)', 'private'), ('Phổ thông (công)', 'public')],
+        'next': 'B3'
+    },
+    'B3': {
+        'q': 'Trong 12 tháng vừa rồi bạn đã từng nhập viện qua đêm tại một bệnh viện tâm thần không?',
+        'type': 'radio',
+        'opts': [('Có', '5'), ('Không', '1')],
+        'next_logic': lambda a: 'B3a1' if a == '5' else 'B4'
+    },
+    'B3a1': {
+        'q': 'Trong vòng 12 tháng qua, đã bao nhiêu lần bạn nhập viện ít nhất một đêm tại bệnh viện tâm thần?',
+        'type': 'number',
+        'next': 'B3a2'
+    },
+    'B3a2': {
+        'q': 'Tổng cộng bạn đã ở lại bao nhiêu đêm tại bệnh viện tâm thần?',
+        'type': 'number',
+        'next': 'B3a3'
+    },
+    'B3a3': {
+        'q': 'Đó là bệnh viện tâm thần thuộc tư nhân hay Nhà Nước?',
+        'type': 'radio',
+        'opts': [('Tư nhân', 'private'), ('Nhà Nước', 'public')],
+        'next': 'B4'
+    },
+    'B4': {
+        'q': 'Trong 12 tháng vừa rồi bạn đã từng nhập viện qua đêm tại bất kỳ đơn vị cai nghiện ma túy và rượu bia nào ở bệnh viện không?',
+        'type': 'radio',
+        'opts': [('Có', '5'), ('Không', '1')],
+        'next_logic': lambda a: 'B4a1' if a == '5' else 'B5'
+    },
+    'B4a1': {
+        'q': 'Trong vòng 12 tháng qua, đã có bao nhiêu lần bạn nhập viện ít nhất một đêm tại các đơn vị cai nghiện ma túy và rượu bia?',
+        'type': 'number',
+        'next': 'B4a2'
+    },
+    'B4a2': {
+        'q': 'Tổng cộng bạn đã ở lại bao nhiêu đêm tại các đơn vị cai nghiện ma túy và rượu bia?',
+        'type': 'number',
+        'next': 'B4a3'
+    },
+    'B4a3': {
+        'q': 'Đó là đơn vị thuộc tư nhân hay Nhà Nước?',
+        'type': 'radio',
+        'opts': [('Tư nhân', 'private'), ('Nhà Nước', 'public')],
+        'next': 'B5'
+    },
+    'B5': {
+        'q': 'Trong 12 tháng qua, (ngoài thời gian bạn đã ở bệnh viện), bạn có gặp bất kỳ bác sĩ hoặc chuyên gia y tế thuộc các lĩnh vực được liệt kê liên quan đến tình trạng sức khỏe của chính bạn không?',
+        'type': 'radio',
+        'note': 'Các chuyên gia y tế bao gồm: Bác sĩ đa khoa, Bác sĩ chuyên khoa, Bác sĩ tâm thần, Nhà tâm lý học, Nhân viên công tác xã hội, Tư vấn viên, Điều dưỡng/Y tá, v.v.',
+        'opts': [('Có', '5'), ('Không', '1')],
+        'next': None  # Logic phức tạp
+    },
+    'B5a': {
+        'q': 'Bạn đã gặp những chuyên gia y tế nào được liệt kê? (Chọn tất cả các đáp án phù hợp)',
+        'type': 'checkbox',
+        'opts': [
+            ('Bác sĩ đa khoa', '1'),
+            ('Bác sĩ chẩn đoán hình ảnh/X-quang, v.v.', '2'),
+            ('Bác sĩ bệnh lý học/xét nghiệm máu v.v.', '3'),
+            ('Bác sĩ nội khoa/chuyên gia y tế khác', '4'),
+            ('Bác sĩ phẫu thuật/phụ khoa', '5'),
+            ('Bác sĩ tâm thần', '6'),
+            ('Nhà tâm lý học', '7'),
+            ('Nhân viên công tác xã hội/cán bộ phúc lợi', '8'),
+            ('Tư vấn viên về tình trạng nghiện chất', '9'),
+            ('Tư vấn viên khác', '10'),
+            ('Điều dưỡng/Y tá', '11'),
+            ('Nhóm chuyên gia sức khỏe tâm thần', '12'),
+            ('Dược sĩ tư vấn chuyên môn', '13'),
+            ('Nhân viên xe cứu thương', '14'),
+            ('Các chuyên gia y tế khác', '15')
+        ],
+        'next': 'B6'
+    },
+    'B6': {
+        'q': 'Bạn đã tham gia tiến trình tư vấn sức khỏe với (TÊN CHUYÊN GIA Y TẾ) bao nhiêu lần trong vòng 12 tháng qua?',
+        'type': 'number',
+        'next': 'B7'
+    },
+    'B7': {
+        'q': 'Có bao nhiêu trong số những lần tham vấn này liên quan đến các vấn đề tâm thần dưới bất kỳ hình thức nào?',
+        'type': 'number',
+        'next': None  # Logic phức tạp
+    },
+    'B8': {
+        'q': 'Những buổi tư vấn về sức khỏe tâm thần đó chủ yếu diễn ra ở đâu?',
+        'type': 'radio',
+        'opts': [
+            ('Phòng khám tư nhân', '1'),
+            ('Bệnh viện công/Bệnh viện tâm thần', '2'),
+            ('Trung tâm sức khỏe cộng đồng', '3'),
+            ('Nhà (tư vấn qua điện thoại/trực tuyến)', '4'),
+            ('Khác', '5')
+        ],
+        'next': 'B9'
+    },
+    'B6_B8_check': {
+        'q': 'Cảm ơn bạn đã cung cấp thông tin',
+        'type': 'info',
+        'next': None  # Removed - no longer needed
+    },
+    'B6_B8_check': {
+        'q': 'Cảm ơn bạn đã cung cấp thông tin về các lần tư vấn',
+        'type': 'info',
+        'next': None  # Logic phức tạp
+    },
+    'B9': {
+        'q': 'dynamic',  # Will be set dynamically in render_question
+        'type': 'checkbox',
+        'opts': [
+            ('Thông tin về bệnh tâm thần, các phương pháp điều trị và dịch vụ', 'info'),
+            ('Thuốc hoặc viên uống', 'medicine'),
+            ('Tâm lý trị liệu - thảo luận về vấn đề từ quá khứ', 'psychotherapy'),
+            ('Liệu pháp nhận thức hành vi - thay đổi suy nghĩ và cảm xúc', 'cbt'),
+            ('Tham vấn - giúp giải quyết các vấn đề', 'counselling'),
+            ('Giúp giải quyết vấn đề thực tế (nhà ở, tiền bạc)', 'practical'),
+            ('Giúp cải thiện khả năng làm việc/sử dụng thời gian', 'work'),
+            ('Giúp cải thiện tự chăm sóc bản thân/nhà cửa', 'selfcare'),
+            ('Giúp gặp gỡ mọi người để được hỗ trợ', 'social'),
+            ('Khác', 'other')
+        ],
+        'next': None  # Logic phức tạp
+    },
+    # Router questions for B10-B17 (these determine which branch to take)
+    'B10': {
+        'q': 'B10 - Thông tin giúp đỡ',
+        'type': 'info',
+        'next': None  # Logic handles this
+    },
+    'B11': {
+        'q': 'B11 - Thuốc hoặc viên uống',
+        'type': 'info',
+        'next': None  # Logic handles this
+    },
+    'B12': {
+        'q': 'B12 - Tâm lý trị liệu/liệu pháp trò chuyện',
+        'type': 'info',
+        'next': None  # Logic handles this
+    },
+    'B13': {
+        'q': 'B13 - Giúp đỡ thực tế',
+        'type': 'info',
+        'next': None  # Logic handles this
+    },
+    'B14': {
+        'q': 'B14 - Giúp đỡ công việc/tự chăm sóc',
+        'type': 'info',
+        'next': None  # Logic handles this
+    },
+    'B15': {
+        'q': 'B15 - Giúp đỡ công việc (cụ thể)',
+        'type': 'info',
+        'next': None  # Logic handles this
+    },
+    'B16': {
+        'q': 'B16 - Giúp đỡ tự chăm sóc (cụ thể)',
+        'type': 'info',
+        'next': None  # Logic handles this
+    },
+    'B17': {
+        'q': 'B17 - Giúp đỡ kết nối xã hội',
+        'type': 'info',
+        'next': None  # Logic handles this
+    },
+    'B10_1': {
+        'q': 'Bạn đã đề cập rằng bạn đã nhận được thông tin về bệnh tâm thần, các phương pháp điều trị và các dịch vụ có sẵn.',
+        'type': 'info',
+        'next': 'B10_1a'
+    },
+    'B10_1a': {
+        'q': 'Bạn có nghĩ rằng bạn đã nhận được đủ sự giúp đỡ kiểu này tương ứng với nhu cầu của bản thân không?',
+        'type': 'radio',
+        'opts': [('Không đủ', '1'), ('Đủ', '5')],
+        'next': None
+    },
+    'B10_1b': {
+        'q': 'Tại sao bạn lại không nhận được nhiều sự giúp đỡ hơn từ các chuyên gia y tế? Vui lòng chọn lý do chính',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có điều gì khác giúp ích', '2'),
+            ('Tôi không biết làm thế nào/ở đâu để nhận giúp đỡ', '3'),
+            ('Tôi e ngại yêu cầu giúp đỡ', '4'),
+            ('Tôi không đủ khả năng chi trả', '5'),
+            ('Tôi đã yêu cầu nhưng không nhận được', '6'),
+            ('Tôi nhận được giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B11'
+    },
+    'B10_2': {
+        'q': 'Bạn đã đề cập rằng bạn không nhận được thông tin về bệnh tâm thần, việc điều trị và các dịch vụ có sẵn.',
+        'type': 'info',
+        'next': 'B10_2a'
+    },
+    'B10_2a': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
+        'type': 'radio',
+        'opts': [('Không cần', '1'), ('Có cần', '5')],
+        'next': None
+    },
+    'B10_2b': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có điều gì giúp ích', '2'),
+            ('Tôi không biết nhận giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại yêu cầu giúp đỡ', '4'),
+            ('Tôi không đủ khả năng chi trả', '5'),
+            ('Tôi đã yêu cầu nhưng không nhận được', '6'),
+            ('Tôi nhận được giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B11'
+    },
+    # B11 - Medicine questions (tương tự B10)
+    'B11_1': {
+        'q': 'Bạn đã đề cập rằng bạn đã nhận được thuốc hoặc viên uống.',
+        'type': 'info',
+        'next': 'B11_1a'
+    },
+    'B11_1a': {
+        'q': 'Bạn có nghĩ rằng bạn đã nhận được đủ sự giúp đỡ kiểu này từ các chuyên gia y tế không?',
+        'type': 'radio',
+        'opts': [('Không đủ', '1'), ('Đủ', '5')],
+        'next': None
+    },
+    'B11_1b': {
+        'q': 'Tại sao bạn lại không nhận được nhiều sự giúp đỡ hơn? Vui lòng chọn lý do chính',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có điều gì khác giúp ích', '2'),
+            ('Tôi không biết làm thế nào/ở đâu', '3'),
+            ('Tôi e ngại yêu cầu giúp đỡ', '4'),
+            ('Tôi không đủ khả năng chi trả', '5'),
+            ('Tôi đã yêu cầu nhưng không nhận được', '6'),
+            ('Tôi nhận được từ nguồn khác', '7')
+        ],
+        'next': 'B12'
+    },
+    'B11_2': {
+        'q': 'Bạn đã đề cập rằng bạn không nhận được thuốc hoặc viên uống.',
+        'type': 'info',
+        'next': 'B11_2a'
+    },
+    'B11_2a': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
+        'type': 'radio',
+        'opts': [('Không cần', '1'), ('Có cần', '5')],
+        'next': None
+    },
+    'B11_2b': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có điều gì giúp ích', '2'),
+            ('Tôi không biết nhận giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại yêu cầu giúp đỡ', '4'),
+            ('Tôi không đủ khả năng chi trả', '5'),
+            ('Tôi đã yêu cầu nhưng không nhận được', '6'),
+            ('Tôi nhận được từ nguồn khác', '7')
+        ],
+        'next': 'B12'
+    },
+    # Các câu B12-B17 tương tự, tôi sẽ tạo template ngắn gọn
+    'B12_1': {'q': 'Bạn đã đề cập rằng bạn đã nhận được dịch vụ tham vấn hoặc liệu pháp trò chuyện.', 'type': 'info', 'next': 'B12_1a'},
+    'B12_1a': {'q': 'Bạn có nghĩ rằng bạn đã nhận được đủ sự giúp đỡ kiểu này không?', 'type': 'radio', 'opts': [('Không đủ', '1'), ('Đủ', '5')], 'next': None},
+    'B12_1b': {'q': 'Tại sao không nhận được nhiều hơn?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết đâu', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu nhưng không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    'B12_2': {'q': 'Bạn không nhận được tham vấn/liệu pháp.', 'type': 'info', 'next': 'B12_2a'},
+    'B12_2a': {'q': 'Bạn có cần loại này không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
+    'B12_2b': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết đâu', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu nhưng không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    
+    'B13_1': {'q': 'Bạn nhận được giúp đỡ giải quyết vấn đề thực tế (nhà ở, tiền bạc).', 'type': 'info', 'next': 'B13_1a'},
+    'B13_1a': {'q': 'Đủ chưa?', 'type': 'radio', 'opts': [('Không đủ', '1'), ('Đủ', '5')], 'next': None},
+    'B13_1b': {'q': 'Tại sao không nhiều hơn?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    'B13_2': {'q': 'Bạn không nhận giúp đỡ thực tế.', 'type': 'info', 'next': 'B13_2a'},
+    'B13_2a': {'q': 'Có cần không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
+    'B13_2b': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    
+    'B14_1': {'q': 'Bạn nhận giúp đỡ cải thiện khả năng làm việc/tự chăm sóc/sử dụng thời gian.', 'type': 'info', 'next': 'B14_1a'},
+    'B14_1a': {'q': 'Đủ chưa?', 'type': 'radio', 'opts': [('Không đủ', '1'), ('Đủ', '5')], 'next': None},
+    'B14_1b': {'q': 'Tại sao không nhiều hơn?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    'B14_2': {'q': 'Bạn không nhận giúp đỡ làm việc/tự chăm sóc.', 'type': 'info', 'next': 'B14_2a'},
+    'B14_2a': {'q': 'Có cần không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
+    'B14_2b': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    
+    'B15_1': {'q': 'Cụ thể: bạn nhận giúp đỡ cải thiện khả năng làm việc/sử dụng thời gian.', 'type': 'info', 'next': 'B15_1a'},
+    'B15_1a': {'q': 'Đủ chưa?', 'type': 'radio', 'opts': [('Không đủ', '1'), ('Đủ', '5')], 'next': None},
+    'B15_1b': {'q': 'Tại sao không nhiều hơn?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    'B15_2': {'q': 'Cụ thể: bạn không nhận giúp đỡ làm việc.', 'type': 'info', 'next': 'B15_2a'},
+    'B15_2a': {'q': 'Có cần không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
+    'B15_2b': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    
+    'B16_1': {'q': 'Cụ thể: bạn nhận giúp đỡ cải thiện tự chăm sóc bản thân/nhà cửa.', 'type': 'info', 'next': 'B16_1a'},
+    'B16_1a': {'q': 'Đủ chưa?', 'type': 'radio', 'opts': [('Không đủ', '1'), ('Đủ', '5')], 'next': None},
+    'B16_1b': {'q': 'Tại sao không nhiều hơn?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    'B16_2': {'q': 'Cụ thể: bạn không nhận giúp đỡ tự chăm sóc.', 'type': 'info', 'next': 'B16_2a'},
+    'B16_2a': {'q': 'Có cần không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
+    'B16_2b': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    
+    'B17_1': {'q': 'Bạn nhận giúp đỡ gặp gỡ mọi người để được hỗ trợ.', 'type': 'info', 'next': 'B17_1a'},
+    'B17_1a': {'q': 'Đủ chưa?', 'type': 'radio', 'opts': [('Không đủ', '1'), ('Đủ', '5')], 'next': None},
+    'B17_1b': {'q': 'Tại sao không nhiều hơn?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    'B17_2': {'q': 'Bạn không nhận giúp đỡ gặp gỡ mọi người.', 'type': 'info', 'next': 'B17_2a'},
+    'B17_2a': {'q': 'Có cần không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
+    'B17_2b': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    
+    # B18 section
+    'B18': {
+        'q': 'Tôi hiểu bạn đã gặp vấn đề với sức khỏe tâm thần nhưng không đề cập nằm viện hoặc nhận giúp đỡ từ chuyên gia y tế. Liệu có hình thức giúp đỡ nào bạn nghĩ mình cần trong 12 tháng qua nhưng không nhận được?',
+        'type': 'radio',
+        'opts': [('Không', '1'), ('Có', '5')],
+        'next': None
+    },
+    'B18_info': {'q': 'Bạn có cần thông tin về bệnh tâm thần, điều trị và dịch vụ không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
+    'B18_info_a': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    
+    'B19': {'q': 'Bạn có cần thuốc/viên uống không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
+    'B19_a': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    
+    'B20': {'q': 'Bạn có cần tham vấn/liệu pháp trò chuyện không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
+    'B20_a': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    
+    'B21': {'q': 'Bạn có cần giúp đỡ giải quyết vấn đề thực tế (nhà ở/tiền bạc) không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
+    'B21_a': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    
+    'B22': {'q': 'Bạn có cần giúp đỡ cải thiện khả năng làm việc/tự chăm sóc/sử dụng thời gian không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
+    'B22_a': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    
+    'B23': {'q': 'Cụ thể: bạn có cần giúp đỡ cải thiện khả năng làm việc/sử dụng thời gian không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
+    'B23_a': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    
+    'B24': {'q': 'Cụ thể: bạn có cần giúp đỡ cải thiện tự chăm sóc bản thân/nhà cửa không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
+    'B24_a': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    
+    'B25': {'q': 'Bạn có cần giúp đỡ gặp gỡ mọi người để được hỗ trợ và có người đồng hành không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
+    'B25_a': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+}
+
+def render_question(q_id, config):
     """Hiển thị câu hỏi"""
-    if q_id == 'END':
-        st.session_state.completed = True
-        return
     
-    config = SURVEY_CONFIG[q_id]
-    
-    st.markdown(f'<div class="question-box">', unsafe_allow_html=True)
-    st.markdown(f"### Câu hỏi: {config['question']}")
+    # Xử lý B9 - câu hỏi động
+    if q_id == 'B9':
+        B7 = st.session_state.answers.get('B7', 0)
+        B2b = st.session_state.answers.get('B2b', '1')
+        B3 = st.session_state.answers.get('B3', '1')
+        B4 = st.session_state.answers.get('B4', '1')
+        
+        # Xác định loại giúp đỡ
+        has_mental_hospitalization = B2b == '5' or B3 == '5' or B4 == '5'
+        has_consultation = B7 and int(B7) >= 1
+        
+        if has_consultation and has_mental_hospitalization:
+            help_type = "các cuộc tư vấn và lần nhập viện"
+        elif has_consultation and not has_mental_hospitalization:
+            help_type = "các cuộc tư vấn"
+        elif not has_consultation and has_mental_hospitalization:
+            help_type = "các lần nhập viện"
+        else:
+            help_type = "các cuộc tư vấn hoặc lần nhập viện"
+        
+        question_text = f"Hãy nhìn vào các hình thức giúp đỡ dưới đây. Bạn đã nhận được hình thức giúp đỡ nào trong {help_type}, cho bất kỳ vấn đề nào liên quan đến sức khỏe tâm thần của bạn? (Chọn tất cả những hình thức phù hợp)"
+        st.markdown(f'### {question_text}')
+    else:
+        st.markdown(f'### {config["q"]}')
     
     if 'note' in config:
         st.info(config['note'])
     
-    # Render theo loại câu hỏi
-    if config['type'] == 'radio':
-        options = [opt['label'] for opt in config['options']]
-        selected = st.radio(
-            "Chọn câu trả lời:",
-            options,
-            key=f"q_{q_id}",
-            index=None
-        )
+    qtype = config['type']
+    
+    if qtype == 'info':
+        st.success("ℹ️ " + config['q'])
+        st.session_state.answers[q_id] = 'info'
+        return True
+    
+    elif qtype == 'radio':
+        opts_labels = [o[0] for o in config['opts']]
+        selected = st.radio("Chọn câu trả lời:", opts_labels, key=f"q_{q_id}", index=None)
         
         if selected:
-            # Tìm value tương ứng
-            for opt in config['options']:
-                if opt['label'] == selected:
-                    st.session_state.answers[q_id] = opt['value']
-                    break
+            for label, val in config['opts']:
+                if label == selected:
+                    st.session_state.answers[q_id] = val
+                    return True
+        return False
     
-    elif config['type'] == 'checkbox':
-        st.write("Chọn tất cả các đáp án phù hợp:")
-        selected_values = []
-        for opt in config['options']:
-            if st.checkbox(opt['label'], key=f"q_{q_id}_{opt['value']}"):
-                selected_values.append(opt['value'])
+    elif qtype == 'checkbox':
+        st.write("Chọn tất cả đáp án phù hợp:")
+        selected_vals = []
+        for label, val in config['opts']:
+            if st.checkbox(label, key=f"cb_{q_id}_{val}"):
+                selected_vals.append(val)
         
-        if selected_values:
-            st.session_state.answers[q_id] = selected_values
+        if selected_vals:
+            st.session_state.answers[q_id] = selected_vals
+            return True
+        return False
     
-    elif config['type'] == 'textarea':
-        answer = st.text_area(
-            "Nhập câu trả lời của bạn:",
-            key=f"q_{q_id}",
-            height=150
-        )
-        if answer:
+    elif qtype == 'textarea':
+        answer = st.text_area("Nhập câu trả lời:", key=f"ta_{q_id}", height=150)
+        if answer.strip():
             st.session_state.answers[q_id] = answer
+            return True
+        return False
     
-    elif config['type'] == 'number':
-        answer = st.number_input(
-            "Nhập số:",
-            min_value=0,
-            step=1,
-            key=f"q_{q_id}"
-        )
+    elif qtype == 'number':
+        answer = st.number_input("Nhập số:", min_value=0, step=1, key=f"num_{q_id}")
         st.session_state.answers[q_id] = answer
+        return True
     
-    elif config['type'] == 'info':
-        st.info("📋 " + config['question'])
-        st.session_state.answers[q_id] = 'acknowledged'
+    return False
+
+def get_next_question(current_q, answers):
+    """Xác định câu hỏi tiếp theo"""
+    config = SURVEY_CONFIG.get(current_q, {})
     
-    st.markdown('</div>', unsafe_allow_html=True)
+    # Ưu tiên logic function
+    if 'next_logic' in config:
+        answer = answers.get(current_q)
+        return config['next_logic'](answer)
+    
+    # Logic phức tạp từ hàm riêng
+    next_q = get_next_question_logic(current_q, answers)
+    if next_q:
+        return next_q
+    
+    # Next đơn giản
+    if 'next' in config:
+        return config['next']
+    
+    return 'END'
 
 def main():
     st.title("🏥 Bảng hỏi Sức khỏe Tâm thần")
     st.markdown("---")
     
+    # Nhập tên người trả lời ở đầu
+    if not st.session_state.respondent_name:
+        st.markdown("### 👤 Trước tiên, vui lòng nhập tên của bạn")
+        respondent_name = st.text_input("Tên của bạn:")
+        
+        if respondent_name.strip():
+            st.session_state.respondent_name = respondent_name
+            st.success(f"✅ Xin chào {respondent_name}! Hãy bắt đầu trả lời bảng hỏi.")
+            st.rerun()
+        else:
+            st.warning("⚠️ Vui lòng nhập tên trước khi tiếp tục")
+            st.stop()
+    
     if not st.session_state.completed:
-        # Hiển thị tiến độ
-        total_questions = len(SURVEY_CONFIG)
-        current_position = len(st.session_state.history)
-        progress = min(current_position / total_questions, 1.0)
+        current_q = st.session_state.current_question
+        
+        if current_q == 'END':
+            st.session_state.completed = True
+            st.rerun()
+        
+        # Progress
+        total_qs = len(SURVEY_CONFIG)
+        current_pos = len(st.session_state.history)
+        progress = min(current_pos / total_qs, 1.0)
         
         st.progress(progress)
-        st.markdown(f'<p class="progress-text">Câu hỏi {current_position} / {total_questions}</p>', 
-                   unsafe_allow_html=True)
+        st.markdown(f'<p class="progress-text">Câu {current_pos} / ~{total_qs}</p>', unsafe_allow_html=True)
         
-        # Hiển thị câu hỏi hiện tại
-        current_q = st.session_state.current_question
-        render_question(current_q)
+        # Render
+        config = SURVEY_CONFIG.get(current_q)
+        if not config:
+            st.error(f"Câu hỏi {current_q} không tồn tại")
+            return
         
-        # Nút điều hướng
+        st.markdown('<div class="question-box">', unsafe_allow_html=True)
+        has_answer = render_question(current_q, config)
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Navigation
         col1, col2, col3 = st.columns([1, 1, 1])
         
         with col1:
@@ -496,14 +1045,10 @@ def main():
                     st.rerun()
         
         with col3:
-            # Check nếu câu hỏi đã được trả lời
-            can_proceed = current_q in st.session_state.answers
-            
-            if st.button("Tiếp theo ➡️", use_container_width=True, disabled=not can_proceed):
-                answer = st.session_state.answers[current_q]
-                next_q = get_next_question(current_q, answer)
+            if st.button("Tiếp theo ➡️", use_container_width=True, disabled=not has_answer):
+                next_q = get_next_question(current_q, st.session_state.answers)
                 
-                if next_q == 'END':
+                if next_q == 'END' or not next_q:
                     st.session_state.completed = True
                     st.rerun()
                 else:
@@ -512,70 +1057,54 @@ def main():
                     st.rerun()
     
     else:
-        # Trang hoàn thành
+        # Hoàn thành
         st.success("✅ Cảm ơn bạn đã hoàn thành bảng hỏi!")
         st.balloons()
         
-        # Nhập tên người trả lời
-        st.markdown("### 👤 Thông tin người trả lời")
-        respondent_name = st.text_input(
-            "Vui lòng nhập tên của bạn:",
-            value=st.session_state.respondent_name
-        )
-        st.session_state.respondent_name = respondent_name
+        st.markdown(f"### 👤 Người trả lời: **{st.session_state.respondent_name}**")
+        st.markdown("### 📊 Tóm tắt câu trả lời")
         
-        st.markdown("### 📊 Tóm tắt câu trả lời của bạn")
-        
-        # Hiển thị tóm tắt
         for q_id, answer in st.session_state.answers.items():
             if q_id in SURVEY_CONFIG:
                 config = SURVEY_CONFIG[q_id]
-                with st.expander(f"**{q_id}**: {config['question'][:80]}..."):
-                    st.write(f"**Câu hỏi:** {config['question']}")
+                with st.expander(f"**{q_id}**: {config['q'][:60]}..."):
+                    st.write(f"**Câu hỏi:** {config['q']}")
                     
-                    # Format câu trả lời
                     if isinstance(answer, list):
-                        # Checkbox
                         answer_text = []
                         for val in answer:
-                            for opt in config['options']:
-                                if opt['value'] == val:
-                                    answer_text.append(opt['label'])
+                            for label, v in config.get('opts', []):
+                                if v == val:
+                                    answer_text.append(label)
                                     break
                         st.write(f"**Trả lời:** {', '.join(answer_text)}")
-                    elif config['type'] == 'radio':
-                        # Radio
-                        for opt in config['options']:
-                            if opt['value'] == answer:
-                                st.write(f"**Trả lời:** {opt['label']}")
+                    elif config['type'] == 'radio' and 'opts' in config:
+                        for label, val in config['opts']:
+                            if val == answer:
+                                st.write(f"**Trả lời:** {label}")
                                 break
                     else:
                         st.write(f"**Trả lời:** {answer}")
         
-        # Xuất dữ liệu
         st.markdown("---")
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            # Tải về JSON
             json_data = json.dumps(st.session_state.answers, ensure_ascii=False, indent=2)
             st.download_button(
-                label="📥 Tải xuống (JSON)",
-                data=json_data,
-                file_name=f"mental_health_survey_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                mime="application/json"
+                "📥 Tải xuống (JSON)",
+                json_data,
+                f"mental_health_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                "application/json"
             )
         
         with col2:
             # Gửi khảo sát lên Drive
             if st.button("📤 Gửi khảo sát", use_container_width=True):
-                if not respondent_name.strip():
-                    st.error("❌ Vui lòng nhập tên của bạn trước khi gửi!")
-                else:
-                    upload_to_google_drive(respondent_name, st.session_state.answers)
+                upload_to_google_drive(st.session_state.respondent_name, st.session_state.answers)
         
         with col3:
-            if st.button("🔄 Làm lại bảng hỏi", use_container_width=True):
+            if st.button("🔄 Làm lại", use_container_width=True):
                 st.session_state.current_question = 'A1'
                 st.session_state.answers = {}
                 st.session_state.history = ['A1']
