@@ -1,6 +1,10 @@
 import streamlit as st
 import json
 from datetime import datetime
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+import os
 
 # Cấu hình trang
 st.set_page_config(
@@ -45,6 +49,8 @@ if 'history' not in st.session_state:
     st.session_state.history = ['A1']
 if 'completed' not in st.session_state:
     st.session_state.completed = False
+if 'respondent_name' not in st.session_state:
+    st.session_state.respondent_name = ""
 
 # Cấu hình bảng hỏi - mapping từ document
 SURVEY_CONFIG = {
@@ -332,6 +338,70 @@ def get_next_question(current_q, answer):
     
     return 'END'
 
+def upload_to_google_drive(respondent_name, answers):
+    """Tải file CSV lên Google Drive"""
+    try:
+        # Tạo dữ liệu CSV
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        csv_content = f"Timestamp,Tên Người Trả Lời,Câu Hỏi,Câu Trả Lời\n"
+        
+        for q_id, answer in answers.items():
+            if q_id in SURVEY_CONFIG:
+                config = SURVEY_CONFIG[q_id]
+                question_text = config['question'].replace(',', ';').replace('\n', ' ')
+                
+                # Format câu trả lời
+                if isinstance(answer, list):
+                    answer_text = []
+                    for val in answer:
+                        for opt in config['options']:
+                            if opt['value'] == val:
+                                answer_text.append(opt['label'])
+                                break
+                    answer_str = '; '.join(answer_text)
+                elif config['type'] == 'radio':
+                    answer_str = ""
+                    for opt in config['options']:
+                        if opt['value'] == answer:
+                            answer_str = opt['label']
+                            break
+                else:
+                    answer_str = str(answer).replace(',', ';').replace('\n', ' ')
+                
+                csv_content += f'"{timestamp}","{respondent_name}","{question_text}","{answer_str}"\n'
+        
+        # Lưu vào local file
+        local_filename = f"survey_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        with open(local_filename, 'w', encoding='utf-8') as f:
+            f.write(csv_content)
+        
+        # Thử upload lên Google Drive nếu có credentials
+        try:
+            creds_file = 'credentials.json'
+            if os.path.exists(creds_file):
+                creds = Credentials.from_service_account_file(
+                    creds_file,
+                    scopes=['https://www.googleapis.com/auth/drive.file']
+                )
+                service = build('drive', 'v3', credentials=creds)
+                
+                file_metadata = {'name': local_filename}
+                media = MediaFileUpload(local_filename, mimetype='text/csv')
+                
+                service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+                st.success(f"✅ Dữ liệu đã được lưu và gửi lên Google Drive thành công!")
+            else:
+                st.success(f"✅ Dữ liệu đã được lưu thành công!\n(File: {local_filename})")
+                st.info("💡 Để gửi lên Google Drive, vui lòng cấu hình file credentials.json")
+        except Exception as e:
+            st.success(f"✅ Dữ liệu đã được lưu thành công!\n(File: {local_filename})")
+            st.warning(f"⚠️ Không thể gửi lên Drive: {str(e)}")
+        
+        return local_filename
+    except Exception as e:
+        st.error(f"❌ Lỗi khi lưu dữ liệu: {str(e)}")
+        return None
+
 def render_question(q_id):
     """Hiển thị câu hỏi"""
     if q_id == 'END':
@@ -446,6 +516,14 @@ def main():
         st.success("✅ Cảm ơn bạn đã hoàn thành bảng hỏi!")
         st.balloons()
         
+        # Nhập tên người trả lời
+        st.markdown("### 👤 Thông tin người trả lời")
+        respondent_name = st.text_input(
+            "Vui lòng nhập tên của bạn:",
+            value=st.session_state.respondent_name
+        )
+        st.session_state.respondent_name = respondent_name
+        
         st.markdown("### 📊 Tóm tắt câu trả lời của bạn")
         
         # Hiển thị tóm tắt
@@ -476,24 +554,33 @@ def main():
         
         # Xuất dữ liệu
         st.markdown("---")
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         
         with col1:
             # Tải về JSON
             json_data = json.dumps(st.session_state.answers, ensure_ascii=False, indent=2)
             st.download_button(
-                label="📥 Tải xuống dữ liệu (JSON)",
+                label="📥 Tải xuống (JSON)",
                 data=json_data,
                 file_name=f"mental_health_survey_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                 mime="application/json"
             )
         
         with col2:
+            # Gửi khảo sát lên Drive
+            if st.button("📤 Gửi khảo sát", use_container_width=True):
+                if not respondent_name.strip():
+                    st.error("❌ Vui lòng nhập tên của bạn trước khi gửi!")
+                else:
+                    upload_to_google_drive(respondent_name, st.session_state.answers)
+        
+        with col3:
             if st.button("🔄 Làm lại bảng hỏi", use_container_width=True):
                 st.session_state.current_question = 'A1'
                 st.session_state.answers = {}
                 st.session_state.history = ['A1']
                 st.session_state.completed = False
+                st.session_state.respondent_name = ""
                 st.rerun()
 
 if __name__ == "__main__":
