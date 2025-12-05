@@ -60,24 +60,19 @@ if 'respondent_name' not in st.session_state:
     st.session_state.respondent_name = ""
 
 def upload_to_google_drive(respondent_name, answers):
-    """Tải file CSV lên Google Drive"""
+    """Tải dữ liệu vào Google Sheet 'SurveyResults'"""
     try:
-        # Tạo dữ liệu CSV
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        csv_content = f"Timestamp,Tên Người Trả Lời,Câu Hỏi,Câu Trả Lời\n"
+        import gspread
+        from oauth2client.service_account import ServiceAccountCredentials
         
-        for q_id, answer in answers.items():
-            # Lấy config câu hỏi
-            q_config = None
-            for key, val in SURVEY_CONFIG.items():
-                if key == q_id:
-                    q_config = val
-                    break
-            
-            if not q_config:
-                continue
-            
-            question_text = q_config.get('q', f"Câu {q_id}").replace(',', ';').replace('\n', ' ')
+        # Chuẩn bị dữ liệu một dòng
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        row_data = [timestamp, respondent_name]
+        
+        # Thêm tất cả câu trả lời vào một dòng
+        for q_id in sorted(answers.keys()):
+            answer = answers[q_id]
+            q_config = SURVEY_CONFIG.get(q_id, {})
             
             # Format câu trả lời
             if isinstance(answer, list):
@@ -95,51 +90,66 @@ def upload_to_google_drive(respondent_name, answers):
                         answer_str = label
                         break
             else:
-                answer_str = str(answer).replace(',', ';').replace('\n', ' ')
+                answer_str = str(answer).replace('\n', ' ')
             
-            csv_content += f'"{timestamp}","{respondent_name}","{question_text}","{answer_str}"\n'
+            row_data.append(answer_str)
         
-        # Lưu vào local file
-        local_filename = f"survey_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        # Lưu vào local CSV file
+        local_filename = f"survey_response_{respondent_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        csv_content = "Timestamp,Tên Người Trả Lời," + ",".join(sorted(answers.keys())) + "\n"
+        csv_content += ",".join([f'"{str(v).replace(chr(34), chr(34)+chr(34))}"' for v in row_data]) + "\n"
+        
         with open(local_filename, 'w', encoding='utf-8') as f:
             f.write(csv_content)
         
-        # Thử upload lên Google Drive nếu có credentials
-        if GOOGLE_DRIVE_AVAILABLE:
-            try:
-                # Kiểm tra credentials từ Streamlit Secrets hoặc file cục bộ
-                creds_dict = None
-                
-                # Cách 1: Lấy từ Streamlit Secrets (dành cho deployment)
-                if "google_credentials" in st.secrets:
-                    creds_dict = st.secrets["google_credentials"]
-                # Cách 2: Lấy từ file cục bộ (dành cho development)
-                elif os.path.exists('credentials.json'):
-                    import json as json_module
-                    with open('credentials.json', 'r') as f:
-                        creds_dict = json_module.load(f)
-                
-                if creds_dict:
-                    creds = Credentials.from_service_account_info(
+        # Thử upload lên Google Sheet nếu có credentials
+        try:
+            creds_dict = None
+            
+            # Cách 1: Lấy từ Streamlit Secrets (dành cho deployment)
+            if "google_credentials" in st.secrets:
+                creds_dict = st.secrets["google_credentials"]
+            # Cách 2: Lấy từ file cục bộ (dành cho development)
+            elif os.path.exists('credentials.json'):
+                import json as json_module
+                with open('credentials.json', 'r') as f:
+                    creds_dict = json_module.load(f)
+            
+            if creds_dict and GOOGLE_DRIVE_AVAILABLE:
+                # Sử dụng gspread để thêm dữ liệu vào Google Sheet
+                try:
+                    from gspread import service_account
+                    
+                    # Xác thực với Google Sheets
+                    gc = service_account.Credentials.from_service_account_info(
                         creds_dict,
-                        scopes=['https://www.googleapis.com/auth/drive.file']
+                        scopes=['https://www.googleapis.com/auth/spreadsheets', 
+                                'https://www.googleapis.com/auth/drive']
                     )
-                    service = build('drive', 'v3', credentials=creds)
                     
-                    file_metadata = {'name': local_filename}
-                    media = MediaFileUpload(local_filename, mimetype='text/csv')
+                    client = gspread.authorize(gc)
                     
-                    service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-                    st.success(f"✅ Dữ liệu đã được lưu và gửi lên Google Drive thành công!")
-                else:
-                    st.success(f"✅ Dữ liệu đã được lưu thành công!\n(File: {local_filename})")
-                    st.info("💡 Để gửi lên Google Drive, cấu hình Streamlit Secrets")
-            except Exception as e:
-                st.success(f"✅ Dữ liệu đã được lưu thành công!\n(File: {local_filename})")
-                st.warning(f"⚠️ Không thể gửi lên Drive: {str(e)}")
-        else:
-            st.success(f"✅ Dữ liệu đã được lưu thành công!\n(File: {local_filename})")
-            st.info("💡 Để gửi lên Google Drive, cài đặt: `pip install google-auth-oauthlib google-auth-httplib2 google-api-python-client`")
+                    # Mở Google Sheet có tên 'SurveyResults'
+                    worksheet = client.open("SurveyResults").sheet1
+                    
+                    # Thêm dòng dữ liệu mới
+                    worksheet.append_row(row_data)
+                    
+                    st.success(f"✅ Dữ liệu đã được lưu vào Google Sheet 'SurveyResults' thành công!")
+                except gspread.exceptions.SpreadsheetNotFound:
+                    st.warning("⚠️ Không tìm thấy Google Sheet 'SurveyResults'. Hãy kiểm tra lại tên sheet.")
+                    st.info(f"✅ Dữ liệu đã được lưu vào file local: {local_filename}")
+                except Exception as e:
+                    st.warning(f"⚠️ Lỗi khi truy cập Google Sheet: {str(e)}")
+                    st.info(f"✅ Dữ liệu đã được lưu vào file local: {local_filename}")
+            else:
+                st.success(f"✅ Dữ liệu đã được lưu thành công!")
+                st.info(f"📁 File local: {local_filename}")
+                st.info("💡 Để gửi dữ liệu vào Google Sheet, hãy cấu hình credentials")
+        
+        except ImportError:
+            st.success(f"✅ Dữ liệu đã được lưu vào file local: {local_filename}")
+            st.info("💡 Để gửi dữ liệu vào Google Sheet, cài đặt: `pip install gspread oauth2client`")
         
         return local_filename
     except Exception as e:
@@ -505,7 +515,7 @@ SURVEY_CONFIG = {
     'A3': {
         'q': 'Bạn sẽ gọi vấn đề hoặc những vấn đề mà bạn gặp phải liên quan đến sức khỏe tâm thần của mình là gì?',
         'type': 'textarea',
-        'note': '(THĂM DÒ NẾU CẦN THIẾT. THÔNG TIN CÓ THỂ ĐƯỢC THÊM VÀO ĐÂY TỪ CÁC CÂU TRẢ LỜI TRƯỚC ĐÓ TRONG CUỘC PHỎNG VẤN)',
+        'note': '(THĂM DÒ NẾU CẦN THIẾT. THÔNG TIN CÓ THỂ ĐƯỢC THÊM VÀO ĐÂY TỪ CÁC CÂU TRẢ LỜI TRƯỚC ĐÓ TRONG CUỘC PHỎNG VẤN. TẠO VÀ GHI LẠI MỘT MÔ TẢ VỀ CÁC VẤN ĐỀ SỨC KHỎE TÂM THẦN ĐÃ TRẢI QUA MÀ ĐỐI TƯỢNG SẼ CẢM THẤY QUEN THUỘC)',
         'next': 'B1'
     },
     'B1': {
@@ -592,7 +602,7 @@ SURVEY_CONFIG = {
         'next': 'B4a2'
     },
     'B4a2': {
-        'q': 'Tổng cộng bạn đã ở lại bao nhiêu đêm tại các đơn vị cai nghiện ma túy và rượu bia?',
+        'q': '(Đối với lần nhập viện đó/Trong những lần nhập viện đó), tổng cộng bạn đã ở lại bao nhiêu đêm tại các đơn vị cai nghiện ma túy và rượu bia?',
         'type': 'number',
         'next': 'B4a3'
     },
@@ -614,36 +624,39 @@ SURVEY_CONFIG = {
         'type': 'checkbox',
         'opts': [
             ('Bác sĩ đa khoa', '1'),
-            ('Bác sĩ chẩn đoán hình ảnh/X-quang, v.v.', '2'),
-            ('Bác sĩ bệnh lý học/xét nghiệm máu v.v.', '3'),
-            ('Bác sĩ nội khoa/chuyên gia y tế khác', '4'),
-            ('Bác sĩ phẫu thuật/phụ khoa', '5'),
+            ('Bác sĩ chẩn đoán hình ảnh hoặc chuyên khoa X-quang, v.v.', '2'),
+            ('Bác sĩ bệnh lý học hoặc chuyên khoa xét nghiệm máu v.v.', '3'),
+            ('Bác sĩ nội khoa hoặc chuyên viên y tế khác', '4'),
+            ('Bác sĩ phẫu thuật hoặc bác sĩ phụ khoa', '5'),
             ('Bác sĩ tâm thần', '6'),
             ('Nhà tâm lý học', '7'),
-            ('Nhân viên công tác xã hội/cán bộ phúc lợi', '8'),
+            ('Nhân viên công tác xã hội hoặc cán bộ phụ trách phúc lợi', '8'),
             ('Tư vấn viên về tình trạng nghiện chất', '9'),
-            ('Tư vấn viên khác', '10'),
+            ('Các tư vấn viên khác', '10'),
             ('Điều dưỡng/Y tá', '11'),
             ('Nhóm chuyên gia sức khỏe tâm thần', '12'),
             ('Dược sĩ tư vấn chuyên môn', '13'),
             ('Nhân viên xe cứu thương', '14'),
-            ('Các chuyên gia y tế khác', '15')
+            ('Các chuyên gia y tế khác, xin vui lòng ghi rõ', '15')
         ],
         'next': 'B6'
     },
     'B6': {
         'q': 'Bạn đã tham gia tiến trình tư vấn sức khỏe với (TÊN CHUYÊN GIA Y TẾ) bao nhiêu lần trong vòng 12 tháng qua?',
         'type': 'number',
+        'note': 'NV: SỐ LẦN TƯƠNG ĐƯƠNG VỚI SỐ LẦN ĐI KHÁM',
         'next': 'B7'
     },
     'B7': {
         'q': 'Có bao nhiêu trong số những lần tham vấn này liên quan đến các vấn đề tâm thần dưới bất kỳ hình thức nào?',
         'type': 'number',
+        'note': '[NẾU SỐ NÀY >0, BẠN HÃY HỎI MỤC B9 KHI BẠN ĐẾN CÂU ĐÓ]',
         'next': None  # Logic phức tạp
     },
     'B8': {
         'q': 'Những buổi tư vấn về sức khỏe tâm thần đó chủ yếu diễn ra ở đâu?',
         'type': 'radio',
+        'note': 'MÃ HÓA CÂU TRẢ LỜI CỦA NGHIỆM THỂ THEO CÁC MÃ ĐỊA ĐIỂM SAU ĐÂY',
         'opts': [
             ('Phòng khám tư nhân', '1'),
             ('Bệnh viện công/Bệnh viện tâm thần', '2'),
@@ -667,16 +680,16 @@ SURVEY_CONFIG = {
         'q': 'dynamic',  # Will be set dynamically in render_question
         'type': 'checkbox',
         'opts': [
-            ('Thông tin về bệnh tâm thần, các phương pháp điều trị và dịch vụ', 'info'),
-            ('Thuốc hoặc viên uống', 'medicine'),
-            ('Tâm lý trị liệu - thảo luận về vấn đề từ quá khứ', 'psychotherapy'),
-            ('Liệu pháp nhận thức hành vi - thay đổi suy nghĩ và cảm xúc', 'cbt'),
-            ('Tham vấn - giúp giải quyết các vấn đề', 'counselling'),
-            ('Giúp giải quyết vấn đề thực tế (nhà ở, tiền bạc)', 'practical'),
-            ('Giúp cải thiện khả năng làm việc/sử dụng thời gian', 'work'),
-            ('Giúp cải thiện tự chăm sóc bản thân/nhà cửa', 'selfcare'),
-            ('Giúp gặp gỡ mọi người để được hỗ trợ', 'social'),
-            ('Khác', 'other')
+            ('Thông tin về bệnh tâm thần, các phương pháp điều trị và các dịch vụ hiện hành có sẵn?', 'info'),
+            ('Thuốc hoặc viên uống dạng nén?', 'medicine'),
+            ('Tâm lý trị liệu - thảo luận về các vấn đề nguyên nhân bắt nguồn từ quá khứ của bạn?', 'psychotherapy'),
+            ('Liệu pháp nhận thức hành vi - học cách để thay đổi suy nghĩ, hành vi và cảm xúc của bạn?', 'cbt'),
+            ('Tham vấn - giúp nói chuyện để giải quyết các vấn đề của bạn.', 'counselling'),
+            ('Giúp giải quyết các vấn đề thực tế, chẳng hạn như nhà ở hoặc tiền bạc?', 'practical'),
+            ('Giúp cải thiện khả năng làm việc, hoặc sử dụng thời gian của bạn theo những cách khác nhau một cách hiệu quả hơn?', 'work'),
+            ('Giúp bạn cải thiện khả năng tự chăm sóc bản thân hoặc nhà cửa.', 'selfcare'),
+            ('Giúp bạn gặp gỡ kết nối với mọi người để được hỗ trợ và có người đồng hành?', 'social'),
+            ('Khác – ví dụ rõ: ______________________________________.', 'other')
         ],
         'next': None  # Logic phức tạp
     },
@@ -733,16 +746,16 @@ SURVEY_CONFIG = {
         'next': None
     },
     'B10_1b': {
-        'q': 'Tại sao bạn lại không nhận được nhiều sự giúp đỡ hơn từ các chuyên gia y tế? Vui lòng chọn lý do chính',
+        'q': 'Tại sao bạn lại không nhận được nhiều sự giúp đỡ hơn từ các chuyên gia y tế? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
         'type': 'radio',
         'opts': [
             ('Tôi muốn tự mình xoay xở', '1'),
-            ('Tôi không nghĩ có điều gì khác giúp ích', '2'),
-            ('Tôi không biết làm thế nào/ở đâu để nhận giúp đỡ', '3'),
-            ('Tôi e ngại yêu cầu giúp đỡ', '4'),
-            ('Tôi không đủ khả năng chi trả', '5'),
-            ('Tôi đã yêu cầu nhưng không nhận được', '6'),
-            ('Tôi nhận được giúp đỡ từ nguồn khác', '7')
+            ('Tôi không nghĩ có bất cứ điều gì khác có thể giúp ích', '2'),
+            ('Tôi không biết làm thế nào hoặc ở đâu để nhận được nhiều sự giúp đỡ hơn', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ thêm, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
         ],
         'next': 'B11'
     },
@@ -758,16 +771,16 @@ SURVEY_CONFIG = {
         'next': None
     },
     'B10_2b': {
-        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính',
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
         'type': 'radio',
         'opts': [
             ('Tôi muốn tự mình xoay xở', '1'),
-            ('Tôi không nghĩ có điều gì giúp ích', '2'),
-            ('Tôi không biết nhận giúp đỡ ở đâu', '3'),
-            ('Tôi e ngại yêu cầu giúp đỡ', '4'),
-            ('Tôi không đủ khả năng chi trả', '5'),
-            ('Tôi đã yêu cầu nhưng không nhận được', '6'),
-            ('Tôi nhận được giúp đỡ từ nguồn khác', '7')
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
         ],
         'next': 'B11'
     },
@@ -784,21 +797,21 @@ SURVEY_CONFIG = {
         'next': None
     },
     'B11_1b': {
-        'q': 'Tại sao bạn lại không nhận được nhiều sự giúp đỡ hơn? Vui lòng chọn lý do chính',
+        'q': 'Tại sao bạn lại không nhận được nhiều sự giúp đỡ hơn từ các chuyên gia y tế? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
         'type': 'radio',
         'opts': [
             ('Tôi muốn tự mình xoay xở', '1'),
-            ('Tôi không nghĩ có điều gì khác giúp ích', '2'),
-            ('Tôi không biết làm thế nào/ở đâu', '3'),
-            ('Tôi e ngại yêu cầu giúp đỡ', '4'),
-            ('Tôi không đủ khả năng chi trả', '5'),
-            ('Tôi đã yêu cầu nhưng không nhận được', '6'),
-            ('Tôi nhận được từ nguồn khác', '7')
+            ('Tôi không nghĩ có bất cứ điều gì khác có thể giúp ích', '2'),
+            ('Tôi không biết làm thế nào hoặc ở đâu để nhận được nhiều sự giúp đỡ hơn', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ thêm, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
         ],
         'next': 'B12'
     },
     'B11_2': {
-        'q': 'Bạn đã đề cập rằng bạn không nhận được thuốc hoặc viên uống.',
+        'q': 'Bạn đã đề cập rằng bạn không nhận được thuốc hoặc viên uống dạng nén.',
         'type': 'info',
         'next': 'B11_2a'
     },
@@ -809,92 +822,485 @@ SURVEY_CONFIG = {
         'next': None
     },
     'B11_2b': {
-        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính',
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
         'type': 'radio',
         'opts': [
             ('Tôi muốn tự mình xoay xở', '1'),
-            ('Tôi không nghĩ có điều gì giúp ích', '2'),
-            ('Tôi không biết nhận giúp đỡ ở đâu', '3'),
-            ('Tôi e ngại yêu cầu giúp đỡ', '4'),
-            ('Tôi không đủ khả năng chi trả', '5'),
-            ('Tôi đã yêu cầu nhưng không nhận được', '6'),
-            ('Tôi nhận được từ nguồn khác', '7')
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
         ],
         'next': 'B12'
     },
-    # Các câu B12-B17 tương tự, tôi sẽ tạo template ngắn gọn
-    'B12_1': {'q': 'Bạn đã đề cập rằng bạn đã nhận được dịch vụ tham vấn hoặc liệu pháp trò chuyện.', 'type': 'info', 'next': 'B12_1a'},
-    'B12_1a': {'q': 'Bạn có nghĩ rằng bạn đã nhận được đủ sự giúp đỡ kiểu này không?', 'type': 'radio', 'opts': [('Không đủ', '1'), ('Đủ', '5')], 'next': None},
-    'B12_1b': {'q': 'Tại sao không nhận được nhiều hơn?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết đâu', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu nhưng không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    'B12_2': {'q': 'Bạn không nhận được tham vấn/liệu pháp.', 'type': 'info', 'next': 'B12_2a'},
-    'B12_2a': {'q': 'Bạn có cần loại này không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
-    'B12_2b': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết đâu', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu nhưng không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    
-    'B13_1': {'q': 'Bạn nhận được giúp đỡ giải quyết vấn đề thực tế (nhà ở, tiền bạc).', 'type': 'info', 'next': 'B13_1a'},
-    'B13_1a': {'q': 'Đủ chưa?', 'type': 'radio', 'opts': [('Không đủ', '1'), ('Đủ', '5')], 'next': None},
-    'B13_1b': {'q': 'Tại sao không nhiều hơn?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    'B13_2': {'q': 'Bạn không nhận giúp đỡ thực tế.', 'type': 'info', 'next': 'B13_2a'},
-    'B13_2a': {'q': 'Có cần không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
-    'B13_2b': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    
-    'B14_1': {'q': 'Bạn nhận giúp đỡ cải thiện khả năng làm việc/tự chăm sóc/sử dụng thời gian.', 'type': 'info', 'next': 'B14_1a'},
-    'B14_1a': {'q': 'Đủ chưa?', 'type': 'radio', 'opts': [('Không đủ', '1'), ('Đủ', '5')], 'next': None},
-    'B14_1b': {'q': 'Tại sao không nhiều hơn?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    'B14_2': {'q': 'Bạn không nhận giúp đỡ làm việc/tự chăm sóc.', 'type': 'info', 'next': 'B14_2a'},
-    'B14_2a': {'q': 'Có cần không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
-    'B14_2b': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    
-    'B15_1': {'q': 'Cụ thể: bạn nhận giúp đỡ cải thiện khả năng làm việc/sử dụng thời gian.', 'type': 'info', 'next': 'B15_1a'},
-    'B15_1a': {'q': 'Đủ chưa?', 'type': 'radio', 'opts': [('Không đủ', '1'), ('Đủ', '5')], 'next': None},
-    'B15_1b': {'q': 'Tại sao không nhiều hơn?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    'B15_2': {'q': 'Cụ thể: bạn không nhận giúp đỡ làm việc.', 'type': 'info', 'next': 'B15_2a'},
-    'B15_2a': {'q': 'Có cần không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
-    'B15_2b': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    
-    'B16_1': {'q': 'Cụ thể: bạn nhận giúp đỡ cải thiện tự chăm sóc bản thân/nhà cửa.', 'type': 'info', 'next': 'B16_1a'},
-    'B16_1a': {'q': 'Đủ chưa?', 'type': 'radio', 'opts': [('Không đủ', '1'), ('Đủ', '5')], 'next': None},
-    'B16_1b': {'q': 'Tại sao không nhiều hơn?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    'B16_2': {'q': 'Cụ thể: bạn không nhận giúp đỡ tự chăm sóc.', 'type': 'info', 'next': 'B16_2a'},
-    'B16_2a': {'q': 'Có cần không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
-    'B16_2b': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    
-    'B17_1': {'q': 'Bạn nhận giúp đỡ gặp gỡ mọi người để được hỗ trợ.', 'type': 'info', 'next': 'B17_1a'},
-    'B17_1a': {'q': 'Đủ chưa?', 'type': 'radio', 'opts': [('Không đủ', '1'), ('Đủ', '5')], 'next': None},
-    'B17_1b': {'q': 'Tại sao không nhiều hơn?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    'B17_2': {'q': 'Bạn không nhận giúp đỡ gặp gỡ mọi người.', 'type': 'info', 'next': 'B17_2a'},
-    'B17_2a': {'q': 'Có cần không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
-    'B17_2b': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    
-    # B18 section
+    'B12_1': {
+        'q': 'Bạn đã đề cập rằng bạn đã nhận được dịch vụ tham vấn hoặc một liệu pháp trò chuyện.',
+        'type': 'info',
+        'next': 'B12_1a'
+    },
+    'B12_1a': {
+        'q': 'Bạn có nghĩ rằng bạn đã nhận được đủ sự giúp đỡ kiểu này từ các chuyên gia y tế không?',
+        'type': 'radio',
+        'opts': [('Không đủ', '1'), ('Đủ', '5')],
+        'next': None
+    },
+    'B12_1b': {
+        'q': 'Tại sao bạn lại không nhận được nhiều sự giúp đỡ hơn từ các chuyên gia y tế? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì khác có thể giúp ích', '2'),
+            ('Tôi không biết làm thế nào hoặc ở đâu để nhận được nhiều sự giúp đỡ hơn', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ thêm, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B13'
+    },
+    'B12_2': {
+        'q': 'Bạn đã đề cập rằng bạn không nhận được dịch vụ tham vấn hoặc một liệu pháp trò chuyện.',
+        'type': 'info',
+        'next': 'B12_2a'
+    },
+    'B12_2a': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
+        'type': 'radio',
+        'opts': [('Không cần', '1'), ('Có cần', '5')],
+        'next': None
+    },
+    'B12_2b': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B13'
+    },
+    'B13_1': {
+        'q': 'Bạn đã đề cập rằng bạn nhận được sự giúp đỡ để giải quyết các vấn đề thực tế như nhà ở hoặc tiền bạc.',
+        'type': 'info',
+        'next': 'B13_1a'
+    },
+    'B13_1a': {
+        'q': 'Bạn có nghĩ rằng bạn đã nhận được đủ sự giúp đỡ kiểu này từ các chuyên gia y tế không?',
+        'type': 'radio',
+        'opts': [('Không đủ', '1'), ('Đủ', '5')],
+        'next': None
+    },
+    'B13_1b': {
+        'q': 'Tại sao bạn lại không nhận được nhiều sự giúp đỡ hơn từ các chuyên gia y tế? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì khác có thể giúp ích', '2'),
+            ('Tôi không biết làm thế nào hoặc ở đâu để nhận được nhiều sự giúp đỡ hơn', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ thêm, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B14'
+    },
+    'B13_2': {
+        'q': 'Bạn đã đề cập rằng bạn không nhận được sự giúp đỡ để giải quyết các vấn đề thực tế như nhà ở hoặc tiền bạc.',
+        'type': 'info',
+        'next': 'B13_2a'
+    },
+    'B13_2a': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
+        'type': 'radio',
+        'opts': [('Không cần', '1'), ('Có cần', '5')],
+        'next': None
+    },
+    'B13_2b': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B14'
+    },
+    'B14_1': {
+        'q': 'Bạn đã đề cập rằng bạn nhận được sự giúp đỡ để cải thiện khả năng làm việc, tự chăm sóc bản thân hoặc sử dụng thời gian.',
+        'type': 'info',
+        'next': 'B14_1a'
+    },
+    'B14_1a': {
+        'q': 'Bạn có nghĩ rằng bạn đã nhận được đủ sự giúp đỡ kiểu này từ các chuyên gia y tế không?',
+        'type': 'radio',
+        'opts': [('Không đủ', '1'), ('Đủ', '5')],
+        'next': None
+    },
+    'B14_1b': {
+        'q': 'Tại sao bạn lại không nhận được nhiều sự giúp đỡ hơn từ các chuyên gia y tế? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì khác có thể giúp ích', '2'),
+            ('Tôi không biết làm thế nào hoặc ở đâu để nhận được nhiều sự giúp đỡ hơn', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ thêm, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B15'
+    },
+    'B14_2': {
+        'q': 'Bạn đã đề cập rằng bạn không nhận được sự giúp đỡ để cải thiện khả năng làm việc, tự chăm sóc bản thân hoặc sử dụng thời gian.',
+        'type': 'info',
+        'next': 'B14_2a'
+    },
+    'B14_2a': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
+        'type': 'radio',
+        'opts': [('Không cần', '1'), ('Có cần', '5')],
+        'next': None
+    },
+    'B14_2b': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B15'
+    },
+    'B15_1': {
+        'q': 'Cụ thể bạn đã đề cập rằng bạn nhận được sự giúp đỡ để cải thiện khả năng làm việc, hoặc sử dụng thời gian của bạn theo những cách khác nhau.',
+        'type': 'info',
+        'next': 'B15_1a'
+    },
+    'B15_1a': {
+        'q': 'Bạn có nghĩ rằng bạn đã nhận được đủ sự giúp đỡ kiểu này từ các chuyên gia y tế không?',
+        'type': 'radio',
+        'opts': [('Không đủ', '1'), ('Đủ', '5')],
+        'next': None
+    },
+    'B15_1b': {
+        'q': 'Tại sao bạn lại không nhận được nhiều sự giúp đỡ hơn từ các chuyên gia y tế? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì khác có thể giúp ích', '2'),
+            ('Tôi không biết làm thế nào hoặc ở đâu để nhận được nhiều sự giúp đỡ hơn', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ thêm, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B16'
+    },
+    'B15_2': {
+        'q': 'Cụ thể bạn đã đề cập rằng bạn không nhận được sự giúp đỡ để cải thiện khả năng làm việc, hoặc sử dụng thời gian của bạn theo những cách khác nhau.',
+        'type': 'info',
+        'next': 'B15_2a'
+    },
+    'B15_2a': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
+        'type': 'radio',
+        'opts': [('Không cần', '1'), ('Có cần', '5')],
+        'next': None
+    },
+    'B15_2b': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B16'
+    },
+    'B16_1': {
+        'q': 'Cụ thể bạn đã đề cập rằng bạn nhận được sự giúp đỡ để cải thiện khả năng tự chăm sóc bản thân hoặc nhà cửa của bạn.',
+        'type': 'info',
+        'next': 'B16_1a'
+    },
+    'B16_1a': {
+        'q': 'Bạn có nghĩ rằng bạn đã nhận được đủ sự giúp đỡ kiểu này từ các chuyên gia y tế không?',
+        'type': 'radio',
+        'opts': [('Không đủ', '1'), ('Đủ', '5')],
+        'next': None
+    },
+    'B16_1b': {
+        'q': 'Tại sao bạn lại không nhận được nhiều sự giúp đỡ hơn từ các chuyên gia y tế? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì khác có thể giúp ích', '2'),
+            ('Tôi không biết làm thế nào hoặc ở đâu để nhận được nhiều sự giúp đỡ hơn', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ thêm, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B17'
+    },
+    'B16_2': {
+        'q': 'Cụ thể bạn đã đề cập rằng bạn không nhận được sự giúp đỡ để cải thiện khả năng tự chăm sóc bản thân hoặc nhà cửa của bạn.',
+        'type': 'info',
+        'next': 'B16_2a'
+    },
+    'B16_2a': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
+        'type': 'radio',
+        'opts': [('Không cần', '1'), ('Có cần', '5')],
+        'next': None
+    },
+    'B16_2b': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B17'
+    },
+    'B17_1': {
+        'q': 'Bạn đã đề cập rằng bạn nhận được sự giúp đỡ để gặp gỡ kết nối với mọi người để được hỗ trợ và có người đồng hành.',
+        'type': 'info',
+        'next': 'B17_1a'
+    },
+    'B17_1a': {
+        'q': 'Bạn có nghĩ rằng bạn đã nhận được đủ sự giúp đỡ kiểu này từ các chuyên gia y tế không?',
+        'type': 'radio',
+        'opts': [('Không đủ', '1'), ('Đủ', '5')],
+        'next': None
+    },
+    'B17_1b': {
+        'q': 'Tại sao bạn lại không nhận được nhiều sự giúp đỡ hơn từ các chuyên gia y tế? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì khác có thể giúp ích', '2'),
+            ('Tôi không biết làm thế nào hoặc ở đâu để nhận được nhiều sự giúp đỡ hơn', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ thêm, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'END'
+    },
+    'B17_2': {
+        'q': 'Bạn đã đề cập rằng bạn không nhận được sự giúp đỡ để gặp gỡ kết nối với mọi người để được hỗ trợ và có người đồng hành.',
+        'type': 'info',
+        'next': 'B17_2a'
+    },
+    'B17_2a': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
+        'type': 'radio',
+        'opts': [('Không cần', '1'), ('Có cần', '5')],
+        'next': None
+    },
+    'B17_2b': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'END'
+    },
     'B18': {
-        'q': 'Tôi hiểu bạn đã gặp vấn đề với sức khỏe tâm thần nhưng không đề cập nằm viện hoặc nhận giúp đỡ từ chuyên gia y tế. Liệu có hình thức giúp đỡ nào bạn nghĩ mình cần trong 12 tháng qua nhưng không nhận được?',
+        'q': 'Tôi hiểu bạn đã gặp vấn đề với tình trạng sức khỏe tâm thần của bản thân, nhưng bạn đã không đề cập đến việc nằm viện hoặc nhận sự giúp đỡ từ bất kỳ chuyên gia y tế nào. Liệu có bất kỳ hình thức giúp đỡ nào mà bạn nghĩ rằng mình cần trong 12 tháng qua nhưng lại không nhận được hay không?',
         'type': 'radio',
         'opts': [('Không', '1'), ('Có', '5')],
         'next': None
     },
-    'B18_info': {'q': 'Bạn có cần thông tin về bệnh tâm thần, điều trị và dịch vụ không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
-    'B18_info_a': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    
-    'B19': {'q': 'Bạn có cần thuốc/viên uống không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
-    'B19_a': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    
-    'B20': {'q': 'Bạn có cần tham vấn/liệu pháp trò chuyện không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
-    'B20_a': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    
-    'B21': {'q': 'Bạn có cần giúp đỡ giải quyết vấn đề thực tế (nhà ở/tiền bạc) không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
-    'B21_a': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    
-    'B22': {'q': 'Bạn có cần giúp đỡ cải thiện khả năng làm việc/tự chăm sóc/sử dụng thời gian không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
-    'B22_a': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    
-    'B23': {'q': 'Cụ thể: bạn có cần giúp đỡ cải thiện khả năng làm việc/sử dụng thời gian không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
-    'B23_a': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    
-    'B24': {'q': 'Cụ thể: bạn có cần giúp đỡ cải thiện tự chăm sóc bản thân/nhà cửa không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
-    'B24_a': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
-    
-    'B25': {'q': 'Bạn có cần giúp đỡ gặp gỡ mọi người để được hỗ trợ và có người đồng hành không?', 'type': 'radio', 'opts': [('Không', '1'), ('Có', '5')], 'next': None},
-    'B25_a': {'q': 'Tại sao không nhận?', 'type': 'radio', 'opts': [('Tự xoay xở', '1'), ('Không giúp ích', '2'), ('Không biết', '3'), ('E ngại', '4'), ('Không đủ tiền', '5'), ('Yêu cầu không được', '6'), ('Nguồn khác', '7')], 'next': None},
+    'B18_info': {
+        'q': 'Bạn có nghĩ rằng bạn cần các thông tin về bệnh tâm thần, phương pháp điều trị và các dịch vụ hiện hành có sẵn không?',
+        'type': 'radio',
+        'opts': [('Không', '1'), ('Có', '5')],
+        'next': None
+    },
+    'B18_info_a': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B19'
+    },
+    'B19': {
+        'q': 'Bạn có nghĩ rằng bạn cần thuốc hoặc viên uống dạng nén không?',
+        'type': 'radio',
+        'opts': [('Không', '1'), ('Có', '5')],
+        'next': None
+    },
+    'B19_a': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B20'
+    },
+    'B20': {
+        'q': 'Bạn có nghĩ rằng bạn cần tham vấn hoặc liệu pháp trò chuyện không?',
+        'type': 'radio',
+        'opts': [('Không', '1'), ('Có', '5')],
+        'next': None
+    },
+    'B20_a': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B21'
+    },
+    'B21': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ để giải quyết các vấn đề thực tế như nhà ở hoặc tiền bạc không?',
+        'type': 'radio',
+        'opts': [('Không', '1'), ('Có', '5')],
+        'next': None
+    },
+    'B21_a': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B22'
+    },
+    'B22': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ để cải thiện khả năng làm việc, tự chăm sóc bản thân hoặc sử dụng thời gian không?',
+        'type': 'radio',
+        'opts': [('Không', '1'), ('Có', '5')],
+        'next': None
+    },
+    'B22_a': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B23'
+    },
+    'B23': {
+        'q': 'Cụ thể bạn có nghĩ rằng bạn cần sự giúp đỡ để cải thiện khả năng làm việc, hoặc sử dụng thời gian của bạn theo những cách khác nhau không?',
+        'type': 'radio',
+        'opts': [('Không', '1'), ('Có', '5')],
+        'next': None
+    },
+    'B23_a': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B24'
+    },
+    'B24': {
+        'q': 'Cụ thể bạn có nghĩ rằng bạn cần sự giúp đỡ để cải thiện khả năng tự chăm sóc bản thân hoặc nhà cửa của bản thân không?',
+        'type': 'radio',
+        'opts': [('Không', '1'), ('Có', '5')],
+        'next': None
+    },
+    'B24_a': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B25'
+    },
+    'B25': {
+        'q': 'Bạn có nghĩ rằng bạn cần sự giúp đỡ để gặp gỡ kết nối với mọi người để được hỗ trợ và có người đồng hành không?',
+        'type': 'radio',
+        'opts': [('Không', '1'), ('Có', '5')],
+        'next': None
+    },
+    'B25_a': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'END'
+    }
 }
 
 def render_question(q_id, config):
