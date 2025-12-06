@@ -94,68 +94,53 @@ def upload_to_google_drive(respondent_name, answers):
             
             row_data.append(answer_str)
         
-        # Lưu vào local CSV file
-        local_filename = f"survey_response_{respondent_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        csv_content = "Timestamp,Tên Người Trả Lời," + ",".join(sorted(answers.keys())) + "\n"
-        csv_content += ",".join([f'"{str(v).replace(chr(34), chr(34)+chr(34))}"' for v in row_data]) + "\n"
+        # Kiểm tra credentials từ Streamlit Secrets
+        if "google_credentials" not in st.secrets:
+            st.error("❌ Chưa cấu hình Google Credentials trong Streamlit Secrets")
+            st.info("💡 Vui lòng thêm credentials vào App Settings > Secrets")
+            return None
         
-        with open(local_filename, 'w', encoding='utf-8') as f:
-            f.write(csv_content)
+        # Lấy credentials từ secrets
+        creds_dict = dict(st.secrets["google_credentials"])
         
-        # Thử upload lên Google Sheet nếu có credentials
+        # Xác thực với Google Sheets
+        scope = ['https://spreadsheets.google.com/feeds',
+                 'https://www.googleapis.com/auth/drive']
+        
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        
+        # Mở Google Sheet có tên 'SurveyResults'
         try:
-            creds_dict = None
+            sheet = client.open("SurveyResults").sheet1
             
-            # Cách 1: Lấy từ Streamlit Secrets (dành cho deployment)
-            if "google_credentials" in st.secrets:
-                creds_dict = st.secrets["google_credentials"]
-            # Cách 2: Lấy từ file cục bộ (dành cho development)
-            elif os.path.exists('credentials.json'):
-                import json as json_module
-                with open('credentials.json', 'r') as f:
-                    creds_dict = json_module.load(f)
+            # Kiểm tra xem đã có header chưa
+            if sheet.row_count == 0 or not sheet.row_values(1):
+                # Tạo header
+                header = ["Timestamp", "Tên Người Trả Lời"] + sorted(answers.keys())
+                sheet.append_row(header)
             
-            if creds_dict and GOOGLE_DRIVE_AVAILABLE:
-                # Sử dụng gspread để thêm dữ liệu vào Google Sheet
-                try:
-                    from gspread import service_account
-                    
-                    # Xác thực với Google Sheets
-                    gc = service_account.Credentials.from_service_account_info(
-                        creds_dict,
-                        scopes=['https://www.googleapis.com/auth/spreadsheets', 
-                                'https://www.googleapis.com/auth/drive']
-                    )
-                    
-                    client = gspread.authorize(gc)
-                    
-                    # Mở Google Sheet có tên 'SurveyResults'
-                    worksheet = client.open("SurveyResults").sheet1
-                    
-                    # Thêm dòng dữ liệu mới
-                    worksheet.append_row(row_data)
-                    
-                    st.success(f"✅ Dữ liệu đã được lưu vào Google Sheet 'SurveyResults' thành công!")
-                except gspread.exceptions.SpreadsheetNotFound:
-                    st.warning("⚠️ Không tìm thấy Google Sheet 'SurveyResults'. Hãy kiểm tra lại tên sheet.")
-                    st.info(f"✅ Dữ liệu đã được lưu vào file local: {local_filename}")
-                except Exception as e:
-                    st.warning(f"⚠️ Lỗi khi truy cập Google Sheet: {str(e)}")
-                    st.info(f"✅ Dữ liệu đã được lưu vào file local: {local_filename}")
-            else:
-                st.success(f"✅ Dữ liệu đã được lưu thành công!")
-                st.info(f"📁 File local: {local_filename}")
-                st.info("💡 Để gửi dữ liệu vào Google Sheet, hãy cấu hình credentials")
-        
-        except ImportError:
-            st.success(f"✅ Dữ liệu đã được lưu vào file local: {local_filename}")
-            st.info("💡 Để gửi dữ liệu vào Google Sheet, cài đặt: `pip install gspread oauth2client`")
-        
-        return local_filename
+            # Thêm dòng dữ liệu mới
+            sheet.append_row(row_data)
+            
+            st.success(f"✅ Dữ liệu đã được lưu vào Google Sheet 'SurveyResults' thành công!")
+            return True
+            
+        except gspread.exceptions.SpreadsheetNotFound:
+            st.error("❌ Không tìm thấy Google Sheet 'SurveyResults'")
+            st.info("💡 Hãy tạo Google Sheet với tên 'SurveyResults' và chia sẻ cho service account email")
+            return None
+            
+    except ImportError:
+        st.error("❌ Thiếu thư viện cần thiết")
+        st.info("💡 Hãy cài đặt: pip install gspread oauth2client")
+        return None
     except Exception as e:
         st.error(f"❌ Lỗi khi lưu dữ liệu: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
         return None
-
+        
 def get_next_question_logic(current_q, answers):
     """Logic phân nhánh phức tạp theo document"""
     
@@ -167,9 +152,9 @@ def get_next_question_logic(current_q, answers):
         B3 = answers.get('B3')
         B4 = answers.get('B4')
         
-        # NẾU B1 VÀ B5 ĐƯỢC MÃ HÓA LÀ 1, CHUYỂN ĐẾN B15 (không có nhập viện và không tư vấn)
+        # NẾU B1 VÀ B5 ĐƯỢC MÃ HÓA LÀ 1, CHUYỂN ĐẾN B18 (không có nhập viện và không tư vấn)
         if B1 == '1' and answer == '1':
-            return 'B15'
+            return 'B18'
         
         # NẾU B2b, B3 HOẶC B4 ĐƯỢC MÃ HÓA LÀ 5 VÀ B5 ĐƯỢC MÃ HÓA LÀ 1, CHUYỂN ĐẾN B9
         if answer == '1' and (B2b == '5' or B3 == '5' or B4 == '5'):
@@ -359,13 +344,9 @@ def get_next_question_logic(current_q, answers):
     if current_q == 'B14_2b':
         return 'B15'
     
-    # B15 - kiểm tra có chọn '7' (work specific) trong B9 không
+    # B15 - info question, router là B15_1 hay B15_2
     if current_q == 'B15':
-        b9_answers = answers.get('B9', [])
-        if '7' in b9_answers:
-            return 'B15_1'
-        else:
-            return 'B16'
+        return 'B15_1'
     
     if current_q == 'B15_1':
         return 'B15_1a'
@@ -387,13 +368,9 @@ def get_next_question_logic(current_q, answers):
     if current_q == 'B15_2b':
         return 'B16'
     
-    # B16 - kiểm tra có chọn '8' (selfcare specific) trong B9 không
+    # B16 - info question
     if current_q == 'B16':
-        b9_answers = answers.get('B9', [])
-        if '8' in b9_answers:
-            return 'B16_1'
-        else:
-            return 'B17'
+        return 'B16_1'
     
     if current_q == 'B16_1':
         return 'B16_1a'
@@ -415,13 +392,9 @@ def get_next_question_logic(current_q, answers):
     if current_q == 'B16_2b':
         return 'B17'
     
-    # B17 - kiểm tra có chọn '9' (social) trong B9 không
+    # B17 - info question
     if current_q == 'B17':
-        b9_answers = answers.get('B9', [])
-        if '9' in b9_answers:
-            return 'B17_1'
-        else:
-            return 'B18'
+        return 'B17_1'
     
     if current_q == 'B17_1':
         return 'B17_1a'
@@ -935,6 +908,11 @@ SURVEY_CONFIG = {
         ],
         'next': 'B15'
     },
+    'B15': {
+        'q': 'Bạn đã đề cập rằng bạn nhận được sự giúp đỡ để cải thiện khả năng làm việc, hoặc sử dụng thời gian.',
+        'type': 'info',
+        'next': 'B15_1'
+    },
     'B15_1': {
         'q': 'Cụ thể bạn đã đề cập rằng bạn nhận được sự giúp đỡ để cải thiện khả năng làm việc, hoặc sử dụng thời gian của bạn theo những cách khác nhau.',
         'type': 'info',
@@ -985,6 +963,11 @@ SURVEY_CONFIG = {
         ],
         'next': 'B16'
     },
+    'B16': {
+        'q': 'Bạn đã đề cập rằng bạn nhận được sự giúp đỡ để cải thiện khả năng tự chăm sóc bản thân hoặc nhà cửa.',
+        'type': 'info',
+        'next': 'B16_1'
+    },
     'B16_1': {
         'q': 'Cụ thể bạn đã đề cập rằng bạn nhận được sự giúp đỡ để cải thiện khả năng tự chăm sóc bản thân hoặc nhà cửa của bạn.',
         'type': 'info',
@@ -1034,6 +1017,11 @@ SURVEY_CONFIG = {
             ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
         ],
         'next': 'B17'
+    },
+    'B17': {
+        'q': 'Bạn đã đề cập rằng bạn nhận được sự giúp đỡ để gặp gỡ kết nối với mọi người để được hỗ trợ.',
+        'type': 'info',
+        'next': 'B17_1'
     },
     'B17_1': {
         'q': 'Bạn đã đề cập rằng bạn nhận được sự giúp đỡ để gặp gỡ kết nối với mọi người để được hỗ trợ và có người đồng hành.',
