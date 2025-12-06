@@ -61,115 +61,99 @@ if 'respondent_name' not in st.session_state:
 
 def upload_to_google_drive(respondent_name, answers):
     """Tải dữ liệu vào Google Sheet 'SurveyResults'"""
-
     try:
         import gspread
-        from google.oauth2.service_account import Credentials
-        import json
-    except Exception as e:
-        st.error(f"❌ Không thể import thư viện Google API: {e}")
-        return None
-
-    try:
-        # ============================
-        # 1️⃣ Chuẩn bị dữ liệu một dòng
-        # ============================
+        from oauth2client.service_account import ServiceAccountCredentials
+        
+        # Chuẩn bị dữ liệu một dòng
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         row_data = [timestamp, respondent_name]
-
+        
+        # Thêm tất cả câu trả lời vào một dòng
         for q_id in sorted(answers.keys()):
             answer = answers[q_id]
             q_config = SURVEY_CONFIG.get(q_id, {})
-
+            
+            # Format câu trả lời
             if isinstance(answer, list):
-                # Multiple choice
-                answer_labels = []
+                answer_text = []
                 for val in answer:
-                    for label, v in q_config.get("opts", []):
+                    for label, v in q_config.get('opts', []):
                         if v == val:
-                            answer_labels.append(label)
+                            answer_text.append(label)
                             break
-                answer_str = "; ".join(answer_labels)
-
-            elif q_config.get("type") == "radio" and "opts" in q_config:
+                answer_str = '; '.join(answer_text)
+            elif q_config.get('type') == 'radio' and 'opts' in q_config:
                 answer_str = ""
-                for label, v in q_config["opts"]:
+                for label, v in q_config['opts']:
                     if v == answer:
                         answer_str = label
                         break
-
             else:
-                answer_str = str(answer).replace("\n", " ")
-
+                answer_str = str(answer).replace('\n', ' ')
+            
             row_data.append(answer_str)
-
-        # ============================
-        # 2️⃣ Lưu LOCAL CSV
-        # ============================
-        local_filename = (
-            f"survey_response_{respondent_name}_"
-            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        )
-
-        csv_header = "Timestamp,Tên Người Trả Lời," + ",".join(sorted(answers.keys())) + "\n"
-        csv_row = ",".join([f'"{str(v).replace(chr(34), chr(34)*2)}"' for v in row_data]) + "\n"
-
-        with open(local_filename, "w", encoding="utf-8") as f:
-            f.write(csv_header + csv_row)
-
-        # ============================
-        # 3️⃣ NẾU CÓ Google Credentials
-        # ============================
-        creds_dict = None
-
-        # Deploy mode (Streamlit Cloud)
-        if "google_credentials" in st.secrets:
-            creds_dict = st.secrets["google_credentials"]
-
-        # Local development
-        elif os.path.exists("credentials.json"):
-            with open("credentials.json", "r", encoding="utf-8") as f:
-                creds_dict = json.load(f)
-
-        # ============================
-        # 4️⃣ Upload vào Google Sheets
-        # ============================
-        if creds_dict:
-            try:
-                scopes = [
-                    "https://www.googleapis.com/auth/spreadsheets",
-                    "https://www.googleapis.com/auth/drive",
-                ]
-
-                creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-                client = gspread.authorize(creds)
-
-                worksheet = client.open("SurveyResults").sheet1
-                worksheet.append_row(row_data)
-
-                st.success("✅ Đã lưu dữ liệu lên Google Sheet thành công!")
-                return local_filename
-
-            except gspread.exceptions.SpreadsheetNotFound:
-                st.warning("⚠️ Không tìm thấy Google Sheet 'SurveyResults'.")
-                st.info(f"📁 CSV đã được lưu: {local_filename}")
-                return local_filename
-
-            except Exception as e:
-                st.error(f"❌ Lỗi khi upload lên Google Sheet: {e}")
-                st.info(f"📁 CSV đã được lưu: {local_filename}")
-                return local_filename
-
-        # ============================
-        # 5️⃣ Nếu không có credentials
-        # ============================
-        else:
-            st.success("✅ Dữ liệu đã được lưu LOCAL.")
-            st.info("💡 Nếu muốn upload Google Sheet, hãy cấu hình secrets.")
-            return local_filename
-
+        
+        # Lưu vào local CSV file
+        local_filename = f"survey_response_{respondent_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        csv_content = "Timestamp,Tên Người Trả Lời," + ",".join(sorted(answers.keys())) + "\n"
+        csv_content += ",".join([f'"{str(v).replace(chr(34), chr(34)+chr(34))}"' for v in row_data]) + "\n"
+        
+        with open(local_filename, 'w', encoding='utf-8') as f:
+            f.write(csv_content)
+        
+        # Thử upload lên Google Sheet nếu có credentials
+        try:
+            creds_dict = None
+            
+            # Cách 1: Lấy từ Streamlit Secrets (dành cho deployment)
+            if "google_credentials" in st.secrets:
+                creds_dict = st.secrets["google_credentials"]
+            # Cách 2: Lấy từ file cục bộ (dành cho development)
+            elif os.path.exists('credentials.json'):
+                import json as json_module
+                with open('credentials.json', 'r') as f:
+                    creds_dict = json_module.load(f)
+            
+            if creds_dict and GOOGLE_DRIVE_AVAILABLE:
+                # Sử dụng gspread để thêm dữ liệu vào Google Sheet
+                try:
+                    from gspread import service_account
+                    
+                    # Xác thực với Google Sheets
+                    gc = service_account.Credentials.from_service_account_info(
+                        creds_dict,
+                        scopes=['https://www.googleapis.com/auth/spreadsheets', 
+                                'https://www.googleapis.com/auth/drive']
+                    )
+                    
+                    client = gspread.authorize(gc)
+                    
+                    # Mở Google Sheet có tên 'SurveyResults'
+                    worksheet = client.open("SurveyResults").sheet1
+                    
+                    # Thêm dòng dữ liệu mới
+                    worksheet.append_row(row_data)
+                    
+                    st.success(f"✅ Dữ liệu đã được lưu vào Google Sheet 'SurveyResults' thành công!")
+                except gspread.exceptions.SpreadsheetNotFound:
+                    st.warning("⚠️ Không tìm thấy Google Sheet 'SurveyResults'. Hãy kiểm tra lại tên sheet.")
+                    st.info(f"✅ Dữ liệu đã được lưu vào file local: {local_filename}")
+                except Exception as e:
+                    st.warning(f"⚠️ Lỗi khi truy cập Google Sheet: {str(e)}")
+                    st.info(f"✅ Dữ liệu đã được lưu vào file local: {local_filename}")
+            else:
+                st.success(f"✅ Dữ liệu đã được lưu thành công!")
+                st.info(f"📁 File local: {local_filename}")
+                st.info("💡 Để gửi dữ liệu vào Google Sheet, hãy cấu hình credentials")
+        
+        except ImportError:
+            st.success(f"✅ Dữ liệu đã được lưu vào file local: {local_filename}")
+            st.info("💡 Để gửi dữ liệu vào Google Sheet, cài đặt: `pip install gspread oauth2client`")
+        
+        return local_filename
     except Exception as e:
-        st.error(f"❌ Lỗi không xác định: {e}")
+        st.error(f"❌ Lỗi khi lưu dữ liệu: {str(e)}")
         return None
 
 def get_next_question_logic(current_q, answers):
@@ -776,6 +760,31 @@ SURVEY_CONFIG = {
         ],
         'next': 'B12'
     },
+    'B11_2': {
+        'q': 'Bạn đã đề cập rằng bạn không nhận được thuốc hoặc viên uống dạng nén.',
+        'type': 'info',
+        'next': 'B11_2a'
+    },
+    'B11_2a': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
+        'type': 'radio',
+        'opts': [('Không cần', '1'), ('Có cần', '5')],
+        'next': None
+    },
+    'B11_2b': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B12'
+    },
     'B12_1': {
         'q': 'Bạn đã đề cập rằng bạn đã nhận được dịch vụ tham vấn hoặc một liệu pháp trò chuyện.',
         'type': 'info',
@@ -795,6 +804,31 @@ SURVEY_CONFIG = {
             ('Tôi không nghĩ có bất cứ điều gì khác có thể giúp ích', '2'),
             ('Tôi không biết làm thế nào hoặc ở đâu để nhận được nhiều sự giúp đỡ hơn', '3'),
             ('Tôi e ngại trong việc yêu cầu giúp đỡ thêm, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B13'
+    },
+    'B12_2': {
+        'q': 'Bạn đã đề cập rằng bạn không nhận được dịch vụ tham vấn hoặc một liệu pháp trò chuyện.',
+        'type': 'info',
+        'next': 'B12_2a'
+    },
+    'B12_2a': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
+        'type': 'radio',
+        'opts': [('Không cần', '1'), ('Có cần', '5')],
+        'next': None
+    },
+    'B12_2b': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
             ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
             ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
             ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
@@ -826,6 +860,31 @@ SURVEY_CONFIG = {
         ],
         'next': 'B14'
     },
+    'B13_2': {
+        'q': 'Bạn đã đề cập rằng bạn không nhận được sự giúp đỡ để giải quyết các vấn đề thực tế như nhà ở hoặc tiền bạc.',
+        'type': 'info',
+        'next': 'B13_2a'
+    },
+    'B13_2a': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
+        'type': 'radio',
+        'opts': [('Không cần', '1'), ('Có cần', '5')],
+        'next': None
+    },
+    'B13_2b': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B14'
+    },
     'B14_1': {
         'q': 'Bạn đã đề cập rằng bạn nhận được sự giúp đỡ để cải thiện khả năng làm việc, tự chăm sóc bản thân hoặc sử dụng thời gian.',
         'type': 'info',
@@ -845,6 +904,31 @@ SURVEY_CONFIG = {
             ('Tôi không nghĩ có bất cứ điều gì khác có thể giúp ích', '2'),
             ('Tôi không biết làm thế nào hoặc ở đâu để nhận được nhiều sự giúp đỡ hơn', '3'),
             ('Tôi e ngại trong việc yêu cầu giúp đỡ thêm, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B15'
+    },
+    'B14_2': {
+        'q': 'Bạn đã đề cập rằng bạn không nhận được sự giúp đỡ để cải thiện khả năng làm việc, tự chăm sóc bản thân hoặc sử dụng thời gian.',
+        'type': 'info',
+        'next': 'B14_2a'
+    },
+    'B14_2a': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
+        'type': 'radio',
+        'opts': [('Không cần', '1'), ('Có cần', '5')],
+        'next': None
+    },
+    'B14_2b': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
             ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
             ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
             ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
@@ -876,6 +960,31 @@ SURVEY_CONFIG = {
         ],
         'next': 'B16'
     },
+    'B15_2': {
+        'q': 'Bạn đã đề cập rằng bạn không nhận được sự giúp đỡ để cải thiện khả năng làm việc hoặc sử dụng thời gian.',
+        'type': 'info',
+        'next': 'B15_2a'
+    },
+    'B15_2a': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
+        'type': 'radio',
+        'opts': [('Không cần', '1'), ('Có cần', '5')],
+        'next': None
+    },
+    'B15_2b': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B16'
+    },
     'B16_1': {
         'q': 'Cụ thể bạn đã đề cập rằng bạn nhận được sự giúp đỡ để cải thiện khả năng tự chăm sóc bản thân hoặc nhà cửa của bạn.',
         'type': 'info',
@@ -895,6 +1004,31 @@ SURVEY_CONFIG = {
             ('Tôi không nghĩ có bất cứ điều gì khác có thể giúp ích', '2'),
             ('Tôi không biết làm thế nào hoặc ở đâu để nhận được nhiều sự giúp đỡ hơn', '3'),
             ('Tôi e ngại trong việc yêu cầu giúp đỡ thêm, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B17'
+    },
+    'B16_2': {
+        'q': 'Bạn đã đề cập rằng bạn không nhận được sự giúp đỡ để cải thiện khả năng tự chăm sóc bản thân hoặc nhà cửa.',
+        'type': 'info',
+        'next': 'B16_2a'
+    },
+    'B16_2a': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
+        'type': 'radio',
+        'opts': [('Không cần', '1'), ('Có cần', '5')],
+        'next': None
+    },
+    'B16_2b': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
             ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
             ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
             ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
@@ -924,7 +1058,32 @@ SURVEY_CONFIG = {
             ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
             ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
         ],
-        'next': 'END'
+        'next': 'B17_2'
+    },
+    'B17_2': {
+        'q': 'Bạn đã đề cập rằng bạn không nhận được sự giúp đỡ để gặp gỡ kết nối với mọi người để được hỗ trợ.',
+        'type': 'info',
+        'next': 'B17_2a'
+    },
+    'B17_2a': {
+        'q': 'Bạn có nghĩ rằng bạn cần giúp đỡ theo kiểu này không?',
+        'type': 'radio',
+        'opts': [('Không cần', '1'), ('Có cần', '5')],
+        'next': None
+    },
+    'B17_2b': {
+        'q': 'Tại sao bạn không nhận sự giúp đỡ này? Vui lòng chọn lý do chính, hoặc một lý do phù hợp nhất với bạn.',
+        'type': 'radio',
+        'opts': [
+            ('Tôi muốn tự mình xoay xở', '1'),
+            ('Tôi không nghĩ có bất cứ điều gì có thể giúp ích cho bản thân', '2'),
+            ('Tôi không biết nhận sự giúp đỡ ở đâu', '3'),
+            ('Tôi e ngại trong việc yêu cầu giúp đỡ, hoặc lo sợ việc người khác sẽ nghĩ gì về tôi nếu tôi làm vậy', '4'),
+            ('Tôi không đủ khả năng chi trả tiền bạc', '5'),
+            ('Tôi đã thử yêu cầu nhưng không nhận được sự giúp đỡ', '6'),
+            ('Tôi đã nhận được sự giúp đỡ từ nguồn khác', '7')
+        ],
+        'next': 'B18'
     },
     'B18': {
         'q': 'Tôi hiểu bạn đã gặp vấn đề với tình trạng sức khỏe tâm thần của bản thân, nhưng bạn đã không đề cập đến việc nằm viện hoặc nhận sự giúp đỡ từ bất kỳ chuyên gia y tế nào. Liệu có bất kỳ hình thức giúp đỡ nào mà bạn nghĩ rằng mình cần trong 12 tháng qua nhưng lại không nhận được hay không?',
